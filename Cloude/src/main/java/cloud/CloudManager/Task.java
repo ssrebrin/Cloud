@@ -1,16 +1,17 @@
-package cloud;
+package cloud.CloudManager;
+
+import cloud.cloud.RemoteFunction;
 
 import java.io.Serializable;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
-public class Task<T extends Serializable, R> implements Serializable {
+public class Task<T, R> implements Serializable {
 
     private final String id;
     private final RemoteFunction<T, R> function;
     private final T argument;
 
-    // не сериализуем — используется только внутри менеджера
     private transient CompletableFuture<R> future;
 
     public Task(RemoteFunction<T, R> function, T argument) {

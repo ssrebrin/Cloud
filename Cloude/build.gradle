@@ -18,3 +18,13 @@ dependencies {
 test {
     useJUnitPlatform()
 }
+
+task runScheduler(type: JavaExec) {
+    mainClass.set("cloud.CloudManager.TaskScheduler")
+    classpath = sourceSets.main.runtimeClasspath
+}
+
+task runCluster(type: JavaExec) {
+    mainClass.set("cloud.Cluster.Cluster")
+    classpath = sourceSets.main.runtimeClasspath
+}

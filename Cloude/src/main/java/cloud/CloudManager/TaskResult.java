@@ -1,4 +1,4 @@
-package cloud;
+package cloud.CloudManager;
 
 import java.io.Serializable;
 

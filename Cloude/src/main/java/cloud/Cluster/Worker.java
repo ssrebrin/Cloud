@@ -1,6 +1,6 @@
 package cloud.Cluster;
-import cloud.Task;
-import cloud.TaskResult;
+import cloud.CloudManager.Task;
+import cloud.CloudManager.TaskResult;
 
 import java.io.*;
 import java.util.concurrent.ExecutorService;
@@ -11,7 +11,7 @@ public class Worker {
     private final ExecutorService executor = Executors.newFixedThreadPool(4);
 
     public <T extends Serializable, R> void execute(Task<T, R> task,
-                                                    ResultCallback<R> callback) {
+                                                    cloud.Cluster.ResultCallback<R> callback) {
 
         executor.submit(() -> {
             try {

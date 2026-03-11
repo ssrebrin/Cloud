@@ -1,4 +1,7 @@
-package cloud;
+package cloud.cloud;
+
+import cloud.cloud.RemoteFunction;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.*;
 import java.net.URI;
@@ -7,7 +10,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Base64;
 import java.util.Map;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class Cloud {
     private final String managerUrl;
@@ -32,7 +34,10 @@ public class Cloud {
     }
 
     public <T extends Serializable, R>
-    R execute(RemoteFunction<T, R> fn, T arg) throws IOException, InterruptedException, ClassNotFoundException {
+    R execute(RemoteFunction<T, R> fn, T arg)
+            throws IOException, InterruptedException, ClassNotFoundException {
+
+        ObjectMapper mapper = new ObjectMapper();
 
         byte[] bytes = serialize(fn);
         String encoded = Base64.getEncoder().encodeToString(bytes);
@@ -41,8 +46,6 @@ public class Cloud {
                 "function", encoded,
                 "argument", Map.of("value", arg)
         );
-
-        ObjectMapper mapper = new ObjectMapper();
 
         String json = mapper.writeValueAsString(req);
 
@@ -55,18 +58,45 @@ public class Cloud {
         HttpResponse<String> response =
                 client.send(request, HttpResponse.BodyHandlers.ofString());
 
-        String body = response.body();
-
         Map<String, Object> map =
-                mapper.readValue(body, Map.class);
+                mapper.readValue(response.body(), Map.class);
 
-        String encodedRes = map.get("result").toString();
 
-        byte[] decoded = Base64.getDecoder().decode(encodedRes);
+        if (!"accepted".equals(map.get("status"))) {
+            throw new RuntimeException("Task was not accepted");
+        }
 
-        ObjectInputStream in =
-                new ObjectInputStream(new ByteArrayInputStream(decoded));
+        String taskId = map.get("taskId").toString();
 
-        return (R) in.readObject();
+        while (true) {
+
+            HttpRequest resultRequest = HttpRequest.newBuilder()
+                    .uri(URI.create(managerUrl + "/result/" + taskId))
+                    .GET()
+                    .build();
+
+            HttpResponse<String> resultResponse =
+                    client.send(resultRequest, HttpResponse.BodyHandlers.ofString());
+
+            Map<String, Object> resultMap =
+                    mapper.readValue(resultResponse.body(), Map.class);
+
+            String status = resultMap.get("status").toString();
+
+            if ("done".equals(status)) {
+
+                String encodedRes = resultMap.get("result").toString();
+
+                byte[] decoded = Base64.getDecoder().decode(encodedRes);
+
+                ObjectInputStream in =
+                        new ObjectInputStream(new ByteArrayInputStream(decoded));
+
+                return (R) in.readObject();
+            }
+
+            // задача ещё выполняется
+            Thread.sleep(1000);
+        }
     }
 }
