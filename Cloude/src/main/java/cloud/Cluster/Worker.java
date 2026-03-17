@@ -1,37 +1,27 @@
 package cloud.Cluster;
+
 import cloud.CloudManager.Task;
 import cloud.CloudManager.TaskResult;
 
-import java.io.*;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.List;
 
 public class Worker {
 
-    private final ExecutorService executor = Executors.newFixedThreadPool(4);
+    public TaskResult<List<Integer>> execute(Task task) {
+        try {
+            List<Integer> values = task.getValues() == null ? List.of() : task.getValues();
+            List<Integer> result = values.stream()
+                    .map(value -> applyStub(task.getFunctionStub(), value))
+                    .toList();
 
-    public <T extends Serializable, R> void execute(Task<T, R> task,
-                                                    cloud.Cluster.ResultCallback<R> callback) {
-
-        executor.submit(() -> {
-            try {
-                R result = task.getFunction().apply(task.getArgument());
-
-                TaskResult<R> taskResult =
-                        new TaskResult<>(task.getId(), result);
-
-                callback.onResult(taskResult);
-
-            } catch (Exception e) {
-                TaskResult<R> taskResult =
-                        new TaskResult<>(task.getId(), e.getMessage());
-
-                callback.onResult(taskResult);
-            }
-        });
+            return new TaskResult<>(task.getId(), result);
+        } catch (Exception e) {
+            return new TaskResult<>(task.getId(), e.getMessage());
+        }
     }
 
-    public void shutdown() {
-        executor.shutdown();
+    private int applyStub(String functionStub, int value) {
+        // Stub execution for now: placeholder function is accepted but ignored.
+        return value;
     }
 }

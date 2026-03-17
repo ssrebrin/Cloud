@@ -1,87 +1,74 @@
 package cloud.CloudManager;
 
-import cloud.CloudManager.TaskResult;
-import cloud.cloud.RemoteFunction;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
 
-import java.io.*;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class Network implements Runnable {
-    private static BlockingQueue<cloud.CloudManager.Task> outgoingTasks;
-    private final BlockingQueue<TaskResult> incomingResults;
-    private final ConcurrentHashMap<String, cloud.CloudManager.ClusterInfo> clusters;
-    private final int port;
 
-    public Network(BlockingQueue<cloud.CloudManager.Task> tasks, BlockingQueue<TaskResult> results,
-                   ConcurrentHashMap<String, cloud.CloudManager.ClusterInfo> clusters, int port
+    private final BlockingQueue<Task> outgoingTasks;
+    private final ConcurrentHashMap<String, ClusterInfo> clusters;
+    private final ConcurrentHashMap<String, TaskResult<List<Integer>>> completedResults;
+    private final int port;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    public Network(
+            BlockingQueue<Task> outgoingTasks,
+            ConcurrentHashMap<String, ClusterInfo> clusters,
+            ConcurrentHashMap<String, TaskResult<List<Integer>>> completedResults,
+            int port
     ) {
-        this.outgoingTasks = tasks;
-        this.incomingResults = results;
+        this.outgoingTasks = outgoingTasks;
         this.clusters = clusters;
+        this.completedResults = completedResults;
         this.port = port;
     }
 
-    static class RegisterHandler implements HttpHandler {
-
-        private final ObjectMapper mapper = new ObjectMapper();
-        private final Map<String, cloud.CloudManager.ClusterInfo> clusters;
-
-        public RegisterHandler(Map<String, cloud.CloudManager.ClusterInfo> clusters) {
-            this.clusters = clusters;
+    @Override
+    public void run() {
+        try {
+            HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+            server.createContext("/execute", new ExecuteHandler());
+            server.createContext("/register", new RegisterHandler());
+            server.createContext("/result", new ResultHandler());
+            server.setExecutor(null);
+            server.start();
+            System.out.println("Server started at http://localhost:" + port);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
+    }
 
+    private class RegisterHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-
             if (!"POST".equals(exchange.getRequestMethod())) {
                 exchange.sendResponseHeaders(405, -1);
                 return;
             }
 
-            String body = new String(exchange.getRequestBody().readAllBytes());
-
-            Map<String, Object> request = mapper.readValue(body, Map.class);
-
-            String id = (String) request.get("id");
-            String host = (String) request.get("host");
+            Map<String, Object> request = mapper.readValue(exchange.getRequestBody().readAllBytes(), Map.class);
+            String id = String.valueOf(request.get("id"));
+            String host = String.valueOf(request.get("host"));
             int port = ((Number) request.get("port")).intValue();
 
-            cloud.CloudManager.ClusterInfo cluster =
-                    new cloud.CloudManager.ClusterInfo(id, host, port);
-
-            clusters.put(id, cluster);
-
+            clusters.put(id, new ClusterInfo(id, host, port));
             System.out.println("Cluster registered: " + id);
 
-            Map<String, String> response = Map.of(
-                    "status", "accepted",
-                    "clusterId", id
-            );
-
-            byte[] json = mapper.writeValueAsBytes(response);
-
-            exchange.getResponseHeaders().set("Content-Type", "application/json");
-            exchange.sendResponseHeaders(200, json.length);
-
-            OutputStream os = exchange.getResponseBody();
-            os.write(json);
-            os.close();
+            writeJson(exchange, 200, Map.of("status", "accepted", "clusterId", id));
         }
     }
 
-    static class ExecuteHandler implements HttpHandler {
-
-        private final ObjectMapper mapper = new ObjectMapper();
-
+    private class ExecuteHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             if (!"POST".equals(exchange.getRequestMethod())) {
@@ -90,47 +77,68 @@ public class Network implements Runnable {
             }
 
             try {
-                System.out.println("New task");
-                byte[] bodyBytes = exchange.getRequestBody().readAllBytes();
+                Map<String, Object> request = mapper.readValue(exchange.getRequestBody().readAllBytes(), Map.class);
+                String functionStub = String.valueOf(request.get("functionStub"));
+                List<Integer> values = parseIntegerList(request.get("values"));
 
-                Task<?, ?> task = mapper.readValue(bodyBytes, Task.class);
-
+                Task task = new Task(functionStub, values);
                 outgoingTasks.put(task);
 
-                Map<String, String> response = Map.of(
-                        "status", "accepted",
-                        "taskId", task.getId()
-                );
-                byte[] json = mapper.writeValueAsBytes(response);
-
-                exchange.getResponseHeaders().set("Content-Type", "application/json");
-                exchange.sendResponseHeaders(200, json.length);
-
-                try (OutputStream os = exchange.getResponseBody()) {
-                    os.write(json);
-                }
-
+                writeJson(exchange, 200, Map.of("status", "accepted", "taskId", task.getId()));
             } catch (Exception e) {
                 e.printStackTrace();
-                exchange.sendResponseHeaders(500, -1);
+                writeJson(exchange, 500, Map.of("status", "error", "error", e.getMessage()));
             }
         }
     }
 
-    @Override
-    public void run() {
+    private class ResultHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
 
-        HttpServer server = null;
-        try {
-            server = HttpServer.create(new InetSocketAddress(this.port), 0);
+            String path = exchange.getRequestURI().getPath();
+            String prefix = "/result/";
+            if (!path.startsWith(prefix) || path.length() <= prefix.length()) {
+                writeJson(exchange, 400, Map.of("status", "error", "error", "taskId is missing"));
+                return;
+            }
+
+            String taskId = path.substring(prefix.length());
+            TaskResult<List<Integer>> result = completedResults.get(taskId);
+            if (result == null) {
+                writeJson(exchange, 200, Map.of("status", "pending"));
+                return;
+            }
+
+            if (result.isSuccess()) {
+                writeJson(exchange, 200, Map.of("status", "done", "taskId", taskId, "result", result.getResult()));
+            } else {
+                writeJson(exchange, 200, Map.of("status", "error", "taskId", taskId, "error", result.getError()));
+            }
         }
-        catch (IOException e) {
-            throw new RuntimeException(e);
+    }
+
+    private List<Integer> parseIntegerList(Object rawList) {
+        if (!(rawList instanceof List<?> list)) {
+            return List.of();
         }
-        server.createContext("/execute", new ExecuteHandler());
-        server.createContext("/register", new RegisterHandler(this.clusters));
-        server.setExecutor(null);
-        server.start();
-        System.out.println("Server started at http://localhost:" + port);
+
+        return list.stream()
+                .map(value -> ((Number) value).intValue())
+                .toList();
+    }
+
+    private void writeJson(HttpExchange exchange, int statusCode, Map<String, Object> payload) throws IOException {
+        byte[] json = mapper.writeValueAsBytes(payload);
+        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.sendResponseHeaders(statusCode, json.length);
+
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(json);
+        }
     }
 }

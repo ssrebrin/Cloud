@@ -1,21 +1,18 @@
 package cloud.CloudManager;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import cloud.cloud.RemoteFunction;
 
-import java.io.*;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.Base64;
+import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 public class TaskSender {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public <T extends Serializable, R> R sendTask(String clusterHost, int clusterPort, cloud.CloudManager.Task<T, R> task) throws Exception {
-
+    public TaskResult<List<Integer>> sendTask(String clusterHost, int clusterPort, Task task) throws Exception {
         URL url = new URL("http://" + clusterHost + ":" + clusterPort + "/execute");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
 
@@ -23,21 +20,7 @@ public class TaskSender {
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", "application/json");
 
-        // сериализация RemoteFunction
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        try (ObjectOutputStream oos = new ObjectOutputStream(bos)) {
-            oos.writeObject(task.getFunction());
-        }
-        String fnBase64 = Base64.getEncoder().encodeToString(bos.toByteArray());
-
-        Map<String, Object> payload = Map.of(
-                "id", task.getId(),
-                "function", fnBase64,
-                "argument", Map.of("value", task.getArgument())
-        );
-
-        String json = mapper.writeValueAsString(payload);
-
+        String json = mapper.writeValueAsString(task);
         try (OutputStream os = conn.getOutputStream()) {
             os.write(json.getBytes());
         }
@@ -48,14 +31,24 @@ public class TaskSender {
         }
 
         Map<String, Object> response = mapper.readValue(conn.getInputStream(), Map.class);
-        String resultBase64 = (String) response.get("result");
+        String status = String.valueOf(response.get("status"));
+        String taskId = String.valueOf(response.get("taskId"));
 
-        byte[] resultBytes = Base64.getDecoder().decode(resultBase64);
-        Object result;
-        try (ObjectInputStream ois = new ObjectInputStream(new java.io.ByteArrayInputStream(resultBytes))) {
-            result = ois.readObject();
+        if ("done".equals(status)) {
+            List<Integer> values = parseIntegerList(response.get("result"));
+            return new TaskResult<>(taskId, values);
         }
 
-        return (R) result;
+        return new TaskResult<>(taskId, String.valueOf(response.get("error")));
+    }
+
+    private List<Integer> parseIntegerList(Object rawList) {
+        if (!(rawList instanceof List<?> list)) {
+            return List.of();
+        }
+
+        return list.stream()
+                .map(value -> ((Number) value).intValue())
+                .toList();
     }
 }

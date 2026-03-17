@@ -1,102 +1,97 @@
 package cloud.cloud;
 
-import cloud.cloud.RemoteFunction;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.io.*;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.Base64;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 
 public class Cloud {
+
+    private static final String FUNCTION_STUB_PREFIX = "serialized-function-placeholder:";
+
     private final String managerUrl;
-    private HttpClient client;
+    private final HttpClient client;
+    private final ObjectMapper mapper;
 
     private Cloud(String managerUrl) {
         this.managerUrl = managerUrl;
+        this.client = HttpClient.newHttpClient();
+        this.mapper = new ObjectMapper();
     }
 
     public static Cloud connect(String url) {
-        Cloud cloud = new Cloud(url);
-        cloud.client = HttpClient.newHttpClient();
-        return cloud;
+        return new Cloud(url);
     }
 
-    private static byte[] serialize(Object obj) throws IOException {
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        ObjectOutputStream out = new ObjectOutputStream(bos);
-        out.writeObject(obj);
-        out.flush();
-        return bos.toByteArray();
-    }
+    public List<Integer> execute(RemoteFunction<Integer, Integer> fn, int[] values)
+            throws IOException, InterruptedException {
 
-    public <T extends Serializable, R>
-    R execute(RemoteFunction<T, R> fn, T arg)
-            throws IOException, InterruptedException, ClassNotFoundException {
+        List<Integer> payloadValues = Arrays.stream(values).boxed().toList();
+        String functionStub = buildFunctionStub(fn);
 
-        ObjectMapper mapper = new ObjectMapper();
-
-        byte[] bytes = serialize(fn);
-        String encoded = Base64.getEncoder().encodeToString(bytes);
-
-        Map<String, Object> req = Map.of(
-                "function", encoded,
-                "argument", Map.of("value", arg)
+        Map<String, Object> requestBody = Map.of(
+                "functionStub", functionStub,
+                "values", payloadValues
         );
-
-        String json = mapper.writeValueAsString(req);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(managerUrl + "/execute"))
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(json))
+                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(requestBody)))
                 .build();
 
-        HttpResponse<String> response =
-                client.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        Map<String, Object> responseMap = mapper.readValue(response.body(), Map.class);
 
-        Map<String, Object> map =
-                mapper.readValue(response.body(), Map.class);
-
-
-        if (!"accepted".equals(map.get("status"))) {
+        if (!"accepted".equals(responseMap.get("status"))) {
             throw new RuntimeException("Task was not accepted");
         }
 
-        String taskId = map.get("taskId").toString();
+        String taskId = String.valueOf(responseMap.get("taskId"));
+        return waitForResult(taskId);
+    }
 
+    private List<Integer> waitForResult(String taskId) throws IOException, InterruptedException {
         while (true) {
-
-            HttpRequest resultRequest = HttpRequest.newBuilder()
+            HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(managerUrl + "/result/" + taskId))
                     .GET()
                     .build();
 
-            HttpResponse<String> resultResponse =
-                    client.send(resultRequest, HttpResponse.BodyHandlers.ofString());
-
-            Map<String, Object> resultMap =
-                    mapper.readValue(resultResponse.body(), Map.class);
-
-            String status = resultMap.get("status").toString();
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            Map<String, Object> resultMap = mapper.readValue(response.body(), Map.class);
+            String status = String.valueOf(resultMap.get("status"));
 
             if ("done".equals(status)) {
-
-                String encodedRes = resultMap.get("result").toString();
-
-                byte[] decoded = Base64.getDecoder().decode(encodedRes);
-
-                ObjectInputStream in =
-                        new ObjectInputStream(new ByteArrayInputStream(decoded));
-
-                return (R) in.readObject();
+                return parseIntegerList(resultMap.get("result"));
             }
 
-            // задача ещё выполняется
-            Thread.sleep(1000);
+            if ("error".equals(status)) {
+                throw new RuntimeException(String.valueOf(resultMap.get("error")));
+            }
+
+            Thread.sleep(500);
         }
+    }
+
+    private List<Integer> parseIntegerList(Object rawList) {
+        if (!(rawList instanceof List<?> list)) {
+            return List.of();
+        }
+
+        return list.stream()
+                .map(value -> ((Number) value).intValue())
+                .toList();
+    }
+
+    private String buildFunctionStub(RemoteFunction<?, ?> fn) {
+        String functionName = fn == null ? "unknown-function" : fn.getClass().getName();
+        return FUNCTION_STUB_PREFIX + functionName;
     }
 }

@@ -1,75 +1,72 @@
 package cloud.CloudManager;
 
-import cloud.cloud.RemoteFunction;
-import cloud.CloudManager.Task;
-
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.*;
+import java.util.List;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 
 public class TaskScheduler {
+
     private final BlockingQueue<Task> outgoingTasks;
-    private final BlockingQueue<cloud.CloudManager.TaskResult> incomingResults;
-    private final cloud.CloudManager.Network network;
+    private final ConcurrentHashMap<String, ClusterInfo> clusters;
+    private final ConcurrentHashMap<String, TaskResult<List<Integer>>> completedResults;
+    private final Network network;
+    private final TaskSender taskSender;
+    private final ExecutorService dispatcher;
 
-    public TaskScheduler(BlockingQueue<Task> outgoingTasks, BlockingQueue<cloud.CloudManager.TaskResult> incomingResults, cloud.CloudManager.Network network) {
-        this.outgoingTasks = outgoingTasks;
-        this.incomingResults = incomingResults;
-        this.network = network;
+    public TaskScheduler(int managerPort) {
+        this.outgoingTasks = new LinkedBlockingQueue<>();
+        this.clusters = new ConcurrentHashMap<>();
+        this.completedResults = new ConcurrentHashMap<>();
+        this.network = new Network(outgoingTasks, clusters, completedResults, managerPort);
+        this.taskSender = new TaskSender();
+        this.dispatcher = Executors.newSingleThreadExecutor();
+
         new Thread(network).start();
+        dispatcher.submit(this::dispatchLoop);
     }
 
-    public void submit(Task task) throws InterruptedException {
-        outgoingTasks.put(task);
-    }
-
-    public cloud.CloudManager.TaskResult getResult() throws InterruptedException {
-        return incomingResults.take();
-    }
-    public static void main(String[] args) {
-        final BlockingQueue<Task> outgoingTasks = new LinkedBlockingQueue<>();
-        final BlockingQueue<cloud.CloudManager.TaskResult> incomingResults = new LinkedBlockingQueue<>();
-        final ConcurrentHashMap<String, cloud.CloudManager.ClusterInfo> clusters = new ConcurrentHashMap<>();
-        System.out.println("Initializing server...");
-
-        Network network = new Network(outgoingTasks, incomingResults, clusters, 8085);
-        network.run();
-
-        /*Thread networkThread = new Thread(network);
-        networkThread.start();*/
-
-        System.out.println("Waiting for clusters to register...");
-
-        TaskScheduler ts = new TaskScheduler(outgoingTasks, incomingResults, network);
-
-        Executors.newSingleThreadScheduledExecutor().schedule(() -> {
-
-            if (clusters.isEmpty()) {
-                System.out.println("No clusters registered yet.");
-                return;
-            }
-
-            ClusterInfo cluster = clusters.values().iterator().next();
-
-            Task task = new Task<>(
-                    (RemoteFunction<Object, Object>) x -> {
-                        System.out.println("Executing task: x=" + x);
-                        return ((Integer) x) * 2;
-                    },
-                    10
-            );
-
+    private void dispatchLoop() {
+        while (!Thread.currentThread().isInterrupted()) {
+            Task task = null;
             try {
-                TaskSender sender = new TaskSender();
-                sender.sendTask(cluster.getHost(), cluster.getPort(), task);
+                task = outgoingTasks.take();
+                ClusterInfo cluster = pickCluster();
+
+                if (cluster == null) {
+                    completedResults.put(task.getId(), new TaskResult<>(task.getId(), "No clusters registered"));
+                    continue;
+                }
+
+                TaskResult<List<Integer>> result = taskSender.sendTask(cluster.getHost(), cluster.getPort(), task);
+                completedResults.put(task.getId(), result);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             } catch (Exception e) {
-                e.printStackTrace();
+                if (task != null) {
+                    completedResults.put(task.getId(), new TaskResult<>(task.getId(), e.getMessage()));
+                } else {
+                    e.printStackTrace();
+                }
             }
+        }
+    }
 
-        }, 5, TimeUnit.SECONDS);
+    private ClusterInfo pickCluster() {
+        if (clusters.isEmpty()) {
+            return null;
+        }
+        return clusters.values().iterator().next();
+    }
 
+    public void shutdown() {
+        dispatcher.shutdownNow();
+    }
 
+    public static void main(String[] args) {
+        System.out.println("Initializing manager on port 8085...");
+        new TaskScheduler(8085);
     }
 }
-

@@ -2,28 +2,27 @@ package cloud.Cluster;
 
 import cloud.CloudManager.Task;
 import cloud.CloudManager.TaskResult;
-import cloud.cloud.RemoteFunction;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
 
-import java.io.*;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URL;
-import java.util.Base64;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executors;
 
 public class Cluster {
 
     private final String managerHost;
     private final int managerPort;
-    public final String hostName;
-    public final int port;
+    private final String hostName;
+    private final int port;
     private final String id;
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -41,32 +40,29 @@ public class Cluster {
         try {
             URL url = new URL("http://" + managerHost + ":" + managerPort + "/register");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json");
 
             Map<String, Object> payload = Map.of(
                     "id", id,
-                    "host", this.hostName,
-                    "port", this.port
+                    "host", hostName,
+                    "port", port
             );
 
             String json = mapper.writeValueAsString(payload);
-
             try (OutputStream os = conn.getOutputStream()) {
-                os.write(json.getBytes());
+                os.write(json.getBytes(StandardCharsets.UTF_8));
             }
 
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
                 System.out.println("Cluster registered successfully: " + id);
                 return true;
-            } else {
-                System.out.println("Failed to register cluster. Response code: " + responseCode);
-                return false;
             }
 
+            System.out.println("Failed to register cluster. Response code: " + responseCode);
+            return false;
         } catch (Exception e) {
             e.printStackTrace();
             return false;
@@ -75,15 +71,14 @@ public class Cluster {
 
     public void startServer() throws IOException {
         if (!register()) {
-            throw new RuntimeException("Failed to register cluster!");
+            throw new RuntimeException("Failed to register cluster");
         }
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(this.port), 0);
+        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/execute", new ExecuteHandler());
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
-
-        System.out.println("Cluster server started on port " + this.port);
+        System.out.println("Cluster server started on port " + port);
     }
 
     private class ExecuteHandler implements HttpHandler {
@@ -95,54 +90,41 @@ public class Cluster {
             }
 
             try {
-                String body = new String(exchange.getRequestBody().readAllBytes());
-                Map<String, Object> requestMap = mapper.readValue(body, Map.class);
+                Task task = mapper.readValue(exchange.getRequestBody().readAllBytes(), Task.class);
+                TaskResult<java.util.List<Integer>> result = worker.execute(task);
 
-                String fnBase64 = (String) requestMap.get("function");
-                byte[] fnBytes = Base64.getDecoder().decode(fnBase64);
-                ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(fnBytes));
-                RemoteFunction<Object, Object> fn = (RemoteFunction<Object, Object>) ois.readObject();
-
-                Map<String, Object> argMap = (Map<String, Object>) requestMap.get("argument");
-                Object arg = argMap.get("value");
-
-                /*Task<java. io. Serializable, Object> task = new Task<>(
-                        (RemoteFunction<java.io.Serializable, Object>) fn,
-                        arg
-                );
-
-
-                worker.execute(new Task<>(fn, arg), (TaskResult<Object> result) -> {
-                    try {
-                        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                        ObjectOutputStream oos = new ObjectOutputStream(bos);
-                        oos.writeObject(result.getResult()); // <-- TaskResult использует getResult()
-                        oos.flush();
-
-                        String encodedResult = Base64.getEncoder().encodeToString(bos.toByteArray());
-                        Map<String, Object> responseMap = Map.of("result", encodedResult);
-                        String jsonResponse = mapper.writeValueAsString(responseMap);
-
-                        exchange.getResponseHeaders().set("Content-Type", "application/json");
-                        exchange.sendResponseHeaders(200, jsonResponse.getBytes().length);
-                        try (OutputStream os = exchange.getResponseBody()) {
-                            os.write(jsonResponse.getBytes());
-                        }
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-                });*/
-
+                if (result.isSuccess()) {
+                    writeJson(exchange, 200, Map.of(
+                            "status", "done",
+                            "taskId", result.getTaskId(),
+                            "result", result.getResult()
+                    ));
+                } else {
+                    writeJson(exchange, 200, Map.of(
+                            "status", "error",
+                            "taskId", result.getTaskId(),
+                            "error", result.getError()
+                    ));
+                }
             } catch (Exception e) {
                 e.printStackTrace();
-                exchange.sendResponseHeaders(500, -1);
+                writeJson(exchange, 500, Map.of("status", "error", "error", e.getMessage()));
             }
+        }
+    }
+
+    private void writeJson(HttpExchange exchange, int statusCode, Map<String, Object> payload) throws IOException {
+        byte[] json = mapper.writeValueAsBytes(payload);
+        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.sendResponseHeaders(statusCode, json.length);
+
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(json);
         }
     }
 
     public static void main(String[] args) throws IOException {
         Cluster cluster = new Cluster("localhost", 8085, "localhost", 8086);
-        cluster.register();
-        //cluster.startServer();
+        cluster.startServer();
     }
 }

@@ -1,8 +1,10 @@
 package cloud.cloud;
 
+import java.io.Serializable;
+
 @SuppressWarnings("unchecked")
 @FunctionalInterface
-public interface RemoteFunction<T,R> extends java.io.Serializable {
+public interface RemoteFunction<T extends Serializable,R> extends Serializable {
     R apply(T t);
 }
 

@@ -1,43 +1,47 @@
 package cloud.CloudManager;
 
-import cloud.cloud.RemoteFunction;
-
 import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 
-public class Task<T, R> implements Serializable {
+public class Task implements Serializable {
 
-    private final String id;
-    private final RemoteFunction<T, R> function;
-    private final T argument;
+    private String id;
+    private String functionStub;
+    private List<Integer> values;
 
-    private transient CompletableFuture<R> future;
+    public Task() {
+        // Default constructor for Jackson
+    }
 
-    public Task(RemoteFunction<T, R> function, T argument) {
+    public Task(String functionStub, List<Integer> values) {
         this.id = UUID.randomUUID().toString();
-        this.function = function;
-        this.argument = argument;
-        this.future = new CompletableFuture<>();
+        this.functionStub = functionStub;
+        this.values = new ArrayList<>(values);
     }
 
     public String getId() {
         return id;
     }
 
-    public RemoteFunction<T, R> getFunction() {
-        return function;
+    public void setId(String id) {
+        this.id = id;
     }
 
-    public T getArgument() {
-        return argument;
+    public String getFunctionStub() {
+        return functionStub;
     }
 
-    public CompletableFuture<R> getFuture() {
-        return future;
+    public void setFunctionStub(String functionStub) {
+        this.functionStub = functionStub;
     }
 
-    public void setFuture(CompletableFuture<R> future) {
-        this.future = future;
+    public List<Integer> getValues() {
+        return values;
+    }
+
+    public void setValues(List<Integer> values) {
+        this.values = values;
     }
 }
