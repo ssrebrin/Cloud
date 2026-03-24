@@ -15,6 +15,8 @@ import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
@@ -38,7 +40,7 @@ public class Worker {
     private final BlockingQueue<TaskResult> Results;
 
     public TaskResult process(WorkerTask task) {
-        return new TaskResult<>(task.getWorkerTaskId(), 42, null);
+        return new TaskResult<ArrayList<Integer>>(task.getTaskId(),  new ArrayList<>(task.getValues()), null, task.getWorkerTaskId());
     }
 
     public void startWorkers(int threads) {
@@ -136,6 +138,8 @@ public class Worker {
                         "taskId", task.getTaskId()
                 ));
 
+                System.out.println("New task");
+
 
             } catch (Exception e) {
                 e.printStackTrace();
@@ -166,7 +170,7 @@ public class Worker {
             if (code != 200) {
                 System.out.println("Failed to send result: " + code);
             }
-            System.out.println("Task sent successfully: " + id);
+            System.out.println("Task sent successfully: " + result.getWorkerTaskId() + " : " + result.getTaskId());
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -203,5 +207,7 @@ public class Worker {
     public static void main(String[] args) throws IOException {
         Worker worker = new Worker("localhost", 8085, "localhost", 8086, 5);
         worker.startServer();
+        worker.startWorkers(1);
+        worker.startResultSender();
     }
 }

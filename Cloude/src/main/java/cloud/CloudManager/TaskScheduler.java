@@ -14,6 +14,7 @@ public class TaskScheduler {
     private final BlockingQueue<Task> outgoingTasks;
     private final ConcurrentHashMap<String, ClusterInfo> clusters;
     private final ConcurrentHashMap<String, TaskResult<List<Integer>>> completedResults;
+    private final ConcurrentHashMap<String, TaskAggregator> aggregators;
     private final Network network;
     private final TaskSender taskSender;
     private final ExecutorService dispatcher;
@@ -23,7 +24,8 @@ public class TaskScheduler {
         this.outgoingTasks = new LinkedBlockingQueue<>();
         this.clusters = new ConcurrentHashMap<>();
         this.completedResults = new ConcurrentHashMap<>();
-        this.network = new Network(outgoingTasks, clusters, completedResults, managerPort);
+        this.aggregators = new ConcurrentHashMap<>();
+        this.network = new Network(outgoingTasks, clusters, completedResults, aggregators, managerPort);
         this.taskSender = new TaskSender();
         this.dispatcher = Executors.newSingleThreadExecutor();
 
@@ -60,6 +62,10 @@ public class TaskScheduler {
                 System.out.println("New task");
                 List<WorkerTask> workerTasks = splitTask(task, 10);
 
+                TaskAggregator aggregator = new TaskAggregator(task.getId(), workerTasks);
+
+                aggregators.put(task.getId(), aggregator);
+
                 for (WorkerTask wt : workerTasks) {
 
                     boolean sent = false;
@@ -71,7 +77,7 @@ public class TaskScheduler {
                     if (clusterCount == 0) {
                         completedResults.put(
                                 task.getId(),
-                                new TaskResult<>(task.getId(), null, "No clusters registered")
+                                new TaskResult<>(task.getId(), null, "No clusters registered", "")
                         );
                         break;
                     }
@@ -103,7 +109,7 @@ public class TaskScheduler {
                     if (!sent) {
                         completedResults.put(
                                 task.getId(),
-                                new TaskResult<>(task.getId(), null, "All clusters failed")
+                                new TaskResult<>(task.getId(), null, "All clusters failed", "")
                         );
                         break;
                     }
@@ -115,7 +121,7 @@ public class TaskScheduler {
                 if (task != null) {
                     completedResults.put(
                             task.getId(),
-                            new TaskResult<>(task.getId(), null, e.getMessage())
+                            new TaskResult<>(task.getId(), null, e.getMessage(), "")
                     );
                 } else {
                     e.printStackTrace();

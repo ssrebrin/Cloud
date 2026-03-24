@@ -1,5 +1,6 @@
 package cloud.CloudManager;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -20,16 +21,19 @@ public class Network implements Runnable {
     private final ConcurrentHashMap<String, TaskResult<List<Integer>>> completedResults;
     private final int port;
     private final ObjectMapper mapper = new ObjectMapper();
+    private final ConcurrentHashMap<String, TaskAggregator> aggregators;
 
     public Network(
             BlockingQueue<Task> outgoingTasks,
             ConcurrentHashMap<String, ClusterInfo> clusters,
             ConcurrentHashMap<String, TaskResult<List<Integer>>> completedResults,
+            ConcurrentHashMap<String, TaskAggregator> aggregators,
             int port
     ) {
         this.outgoingTasks = outgoingTasks;
         this.clusters = clusters;
         this.completedResults = completedResults;
+        this.aggregators = aggregators;
         this.port = port;
     }
 
@@ -96,29 +100,82 @@ public class Network implements Runnable {
     private class ResultHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            if (!"GET".equals(exchange.getRequestMethod())) {
-                exchange.sendResponseHeaders(405, -1);
-                return;
-            }
+            switch (exchange.getRequestMethod()) {
+                case "GET":
+                    String path = exchange.getRequestURI().getPath();
+                    String prefix = "/result/";
+                    if (!path.startsWith(prefix) || path.length() <= prefix.length()) {
+                        writeJson(exchange, 400, Map.of("status", "error", "error", "taskId is missing"));
+                        return;
+                    }
 
-            String path = exchange.getRequestURI().getPath();
-            String prefix = "/result/";
-            if (!path.startsWith(prefix) || path.length() <= prefix.length()) {
-                writeJson(exchange, 400, Map.of("status", "error", "error", "taskId is missing"));
-                return;
-            }
+                    String taskId = path.substring(prefix.length());
+                    TaskResult<List<Integer>> result = completedResults.get(taskId);
+                    if (result == null) {
+                        writeJson(exchange, 202, Map.of("status", "pending"));
+                        return;
+                    }
 
-            String taskId = path.substring(prefix.length());
-            TaskResult<List<Integer>> result = completedResults.get(taskId);
-            if (result == null) {
-                writeJson(exchange, 200, Map.of("status", "pending"));
-                return;
-            }
+                    if (result.isSuccess()) {
+                        writeJson(exchange, 200, Map.of("status", "done", "taskId", taskId, "result", result.getResult()));
+                    } else {
+                        writeJson(exchange, 200, Map.of("status", "error", "taskId", taskId, "error", result.getError()));
+                    }
 
-            if (result.isSuccess()) {
-                writeJson(exchange, 200, Map.of("status", "done", "taskId", taskId, "result", result.getResult()));
-            } else {
-                writeJson(exchange, 200, Map.of("status", "error", "taskId", taskId, "error", result.getError()));
+                    System.out.println("Task sent");
+                    break;
+                case "POST":
+                    try {
+                        TaskResult<List<Integer>> workerResult =
+                                mapper.readValue(exchange.getRequestBody().readAllBytes(),
+                                        new TypeReference<TaskResult<List<Integer>>>() {});
+
+                        String taskIdd = workerResult.getTaskId();
+
+                        TaskAggregator aggregator = aggregators.get(taskIdd);
+                        System.out.println(">" + aggregators);
+                        System.out.println("Worker task sent " + taskIdd);
+
+                        if (aggregator == null) {
+                            writeJson(exchange, 404, Map.of(
+                                    "status", "error",
+                                    "error", "Unknown taskId"
+                            ));
+                            return;
+                        }
+
+                        String workerTaskId = workerResult.getWorkerTaskId();
+
+                        if (workerResult.isSuccess()) {
+                            aggregator.complete(workerTaskId, workerResult.getResult());
+                        } else {
+                            aggregator.fail(workerTaskId, workerResult.getError());
+                        }
+
+                        if (aggregator.isFinished()) {
+                            TaskResult<List<Integer>> finalResult = aggregator.buildResult();
+
+                            completedResults.put(taskIdd, finalResult);
+                            aggregators.remove(taskIdd);
+                        }
+
+                        writeJson(exchange, 200, Map.of(
+                                "status", "ok"
+                        ));
+
+                    } catch (Exception e) {
+                        e.printStackTrace();
+
+                        writeJson(exchange, 500, Map.of(
+                                "status", "error",
+                                "error", e.getMessage()
+                        ));
+                    }
+                    break;
+                default:
+                        exchange.sendResponseHeaders(405, -1);
+                        return;
+
             }
         }
     }

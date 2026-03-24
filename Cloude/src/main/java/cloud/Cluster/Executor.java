@@ -23,9 +23,9 @@ public class Executor {
                     .map(value -> applyStub(task.getFunctionStub(), value))
                     .toList();
 
-            return new TaskResult<>(task.getId(), result, null);
+            return new TaskResult<>(task.getId(), result, null, "");
         } catch (Exception e) {
-            return new TaskResult<>(task.getId(), null, e.getMessage());
+            return new TaskResult<>(task.getId(), null, e.getMessage(), "");
         }
     }
 
