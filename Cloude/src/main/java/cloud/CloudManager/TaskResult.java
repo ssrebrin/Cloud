@@ -6,19 +6,14 @@ public class TaskResult<R> implements Serializable {
 
     private final String taskId;
     private final R result;
-    private final String error;
+    private String error;
 
-    public TaskResult(String taskId, R result) {
+    public TaskResult(String taskId, R result, String error) {
         this.taskId = taskId;
         this.result = result;
-        this.error = null;
-    }
-
-    public TaskResult(String taskId, String error) {
-        this.taskId = taskId;
-        this.result = null;
         this.error = error;
     }
+
 
     public String getTaskId() {
         return taskId;
@@ -30,6 +25,10 @@ public class TaskResult<R> implements Serializable {
 
     public String getError() {
         return error;
+    }
+
+    public void setError(String error) {
+        this.error = error;
     }
 
     public boolean isSuccess() {

@@ -10,15 +10,17 @@ public class Task implements Serializable {
     private String id;
     private String functionStub;
     private List<Integer> values;
+    private String callback;
 
     public Task() {
         // Default constructor for Jackson
     }
 
-    public Task(String functionStub, List<Integer> values) {
+    public Task(String functionStub, List<Integer> values, String callback) {
         this.id = UUID.randomUUID().toString();
         this.functionStub = functionStub;
         this.values = new ArrayList<>(values);
+        this.callback = callback;
     }
 
     public String getId() {

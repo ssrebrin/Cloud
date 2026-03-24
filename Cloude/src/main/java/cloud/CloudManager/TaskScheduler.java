@@ -1,5 +1,7 @@
 package cloud.CloudManager;
 
+import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -15,6 +17,7 @@ public class TaskScheduler {
     private final Network network;
     private final TaskSender taskSender;
     private final ExecutorService dispatcher;
+    private int currentIndex = 0;
 
     public TaskScheduler(int managerPort) {
         this.outgoingTasks = new LinkedBlockingQueue<>();
@@ -28,25 +31,92 @@ public class TaskScheduler {
         dispatcher.submit(this::dispatchLoop);
     }
 
+    public static List<WorkerTask> splitTask(Task task, int batchSize) {
+        List<WorkerTask> result = new ArrayList<>();
+
+        List<Integer> values = task.getValues();
+
+        for (int i = 0; i < values.size(); i += batchSize) {
+            int end = Math.min(i + batchSize, values.size());
+
+            List<Integer> batch = values.subList(i, end);
+
+            result.add(new WorkerTask(
+                    task.getId(),
+                    task.getFunctionStub(),
+                    batch
+            ));
+        }
+
+        return result;
+    }
+
     private void dispatchLoop() {
         while (!Thread.currentThread().isInterrupted()) {
             Task task = null;
+
             try {
                 task = outgoingTasks.take();
-                ClusterInfo cluster = pickCluster();
+                System.out.println("New task");
+                List<WorkerTask> workerTasks = splitTask(task, 10);
 
-                if (cluster == null) {
-                    completedResults.put(task.getId(), new TaskResult<>(task.getId(), "No clusters registered"));
-                    continue;
+                for (WorkerTask wt : workerTasks) {
+
+                    boolean sent = false;
+
+                    List<ClusterInfo> clusterList = new ArrayList<>(clusters.values());
+
+                    int clusterCount = clusterList.size();
+
+                    if (clusterCount == 0) {
+                        completedResults.put(
+                                task.getId(),
+                                new TaskResult<>(task.getId(), null, "No clusters registered")
+                        );
+                        break;
+                    }
+
+                    int attempts = 0;
+
+                    while (attempts < clusterCount) {
+                        ClusterInfo cluster = clusterList.get(currentIndex);
+
+                        currentIndex = (currentIndex + 1) % clusterCount;
+
+                        try {
+                            taskSender.sendTask(
+                                    cluster.getHost(),
+                                    cluster.getPort(),
+                                    wt
+                            );
+                            sent = true;
+                            break;
+
+                        } catch (Exception e) {
+                            sent = false;
+                            e.printStackTrace();
+                        }
+
+                        attempts++;
+                    }
+
+                    if (!sent) {
+                        completedResults.put(
+                                task.getId(),
+                                new TaskResult<>(task.getId(), null, "All clusters failed")
+                        );
+                        break;
+                    }
                 }
 
-                TaskResult<List<Integer>> result = taskSender.sendTask(cluster.getHost(), cluster.getPort(), task);
-                completedResults.put(task.getId(), result);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
                 if (task != null) {
-                    completedResults.put(task.getId(), new TaskResult<>(task.getId(), e.getMessage()));
+                    completedResults.put(
+                            task.getId(),
+                            new TaskResult<>(task.getId(), null, e.getMessage())
+                    );
                 } else {
                     e.printStackTrace();
                 }

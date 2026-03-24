@@ -37,7 +37,8 @@ public class Cloud {
 
         Map<String, Object> requestBody = Map.of(
                 "functionStub", functionStub,
-                "values", payloadValues
+                "values", payloadValues,
+                "callback", "http://localhost:8087/callback"
         );
 
         HttpRequest request = HttpRequest.newBuilder()
