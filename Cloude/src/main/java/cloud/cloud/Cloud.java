@@ -32,13 +32,21 @@ public class Cloud {
         return new Cloud(url);
     }
 
-    public List<Integer> execute(RemoteFunction<Integer, Integer> fn, int[] values)
+    public List<Integer> execute(RemoteFunction<Integer, Integer> fn, int[] values, Class<?>... extraClasses)
             throws IOException, InterruptedException {
 
         List<Integer> payloadValues = Arrays.stream(values).boxed().toList();
 
         byte[] serializedFn = serializer.serialize(fn);
-        byte[] jarBytes = CodePacker.packClass(fn.getClass(), Main.class, RemoteFunction.class);
+        
+        // Объединяем обязательные классы и дополнительные
+        Class<?>[] allForJar = new Class<?>[extraClasses.length + 3];
+        allForJar[0] = fn.getClass();
+        allForJar[1] = Main.class;
+        allForJar[2] = RemoteFunction.class;
+        System.arraycopy(extraClasses, 0, allForJar, 3, extraClasses.length);
+        
+        byte[] jarBytes = CodePacker.packClass(allForJar);
 
         Map<String, Object> requestBody = Map.of(
                 "serializedFunction", Base64.getEncoder().encodeToString(serializedFn),
