@@ -22,6 +22,7 @@ public class Network implements Runnable {
     private final int port;
     private final ObjectMapper mapper = new ObjectMapper();
     private final ConcurrentHashMap<String, TaskAggregator> aggregators;
+    private HttpServer server;
 
     public Network(
             BlockingQueue<Task> outgoingTasks,
@@ -40,7 +41,7 @@ public class Network implements Runnable {
     @Override
     public void run() {
         try {
-            HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+            this.server = HttpServer.create(new InetSocketAddress(port), 0);
             server.createContext("/execute", new ExecuteHandler());
             server.createContext("/register", new RegisterHandler());
             server.createContext("/result", new ResultHandler());
@@ -49,6 +50,12 @@ public class Network implements Runnable {
             System.out.println("Server started at http://localhost:" + port);
         } catch (IOException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    public void stop() {
+        if (server != null) {
+            server.stop(0);
         }
     }
 

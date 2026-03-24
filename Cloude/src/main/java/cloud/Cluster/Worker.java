@@ -136,17 +136,28 @@ public class Worker {
         }
     }
 
+    private HttpServer server;
+
     public void startServer() throws IOException {
         if (!register()) {
             throw new RuntimeException("Failed to register cluster");
         }
 
         startWorkers(this.workerThreads);
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+        this.server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/execute", new ExecuteHandler());
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
         System.out.println("Cluster server started on port " + port);
+    }
+
+    public void stop() {
+        if (server != null) {
+            server.stop(0);
+        }
+        if (workerPool != null) {
+            workerPool.shutdownNow();
+        }
     }
 
     private class ExecuteHandler implements HttpHandler {

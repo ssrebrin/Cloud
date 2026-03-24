@@ -142,6 +142,7 @@ public class TaskScheduler {
 
     public void shutdown() {
         dispatcher.shutdownNow();
+        network.stop();
     }
 
     public static void main(String[] args) {
