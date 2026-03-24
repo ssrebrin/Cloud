@@ -3,6 +3,8 @@ package cloud.Cluster;
 import cloud.CloudManager.Task;
 import cloud.CloudManager.TaskResult;
 import cloud.CloudManager.WorkerTask;
+import cloud.serialization.CloudClassLoader;
+import cloud.serialization.KryoSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -39,8 +41,35 @@ public class Worker {
     private final BlockingQueue<WorkerTask> Tasks;
     private final BlockingQueue<TaskResult> Results;
 
+    private final KryoSerializer serializer = new KryoSerializer();
+
     public TaskResult process(WorkerTask task) {
-        return new TaskResult<ArrayList<Integer>>(task.getTaskId(),  new ArrayList<>(task.getValues()), null, task.getWorkerTaskId());
+        try {
+            CloudClassLoader classLoader = new CloudClassLoader(this.getClass().getClassLoader());
+            
+            // Загрузка JAR с кодом (если есть)
+            if (task.getJarBytes() != null) {
+                byte[] jarBytes = java.util.Base64.getDecoder().decode(task.getJarBytes());
+                classLoader.addJar(jarBytes);
+            }
+
+            // Десериализация функции
+            byte[] fnBytes = java.util.Base64.getDecoder().decode(task.getSerializedFunction());
+            cloud.cloud.RemoteFunction<Integer, Integer> fn = 
+                (cloud.cloud.RemoteFunction<Integer, Integer>) serializer.deserialize(fnBytes, classLoader);
+
+            // Выполнение
+            List<Integer> results = new ArrayList<>();
+            for (Integer val : task.getValues()) {
+                results.add(fn.apply(val));
+            }
+
+            return new TaskResult<>(task.getTaskId(), results, null, task.getWorkerTaskId());
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return new TaskResult<>(task.getTaskId(), null, e.getMessage(), task.getWorkerTaskId());
+        }
     }
 
     public void startWorkers(int threads) {

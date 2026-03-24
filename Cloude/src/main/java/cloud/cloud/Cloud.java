@@ -1,5 +1,7 @@
 package cloud.cloud;
 
+import cloud.serialization.CodePacker;
+import cloud.serialization.KryoSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -8,21 +10,22 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
 public class Cloud {
 
-    private static final String FUNCTION_STUB_PREFIX = "serialized-function-placeholder:";
-
     private final String managerUrl;
     private final HttpClient client;
     private final ObjectMapper mapper;
+    private final KryoSerializer serializer;
 
     private Cloud(String managerUrl) {
         this.managerUrl = managerUrl;
         this.client = HttpClient.newHttpClient();
         this.mapper = new ObjectMapper();
+        this.serializer = new KryoSerializer();
     }
 
     public static Cloud connect(String url) {
@@ -33,10 +36,13 @@ public class Cloud {
             throws IOException, InterruptedException {
 
         List<Integer> payloadValues = Arrays.stream(values).boxed().toList();
-        String functionStub = buildFunctionStub(fn);
+
+        byte[] serializedFn = serializer.serialize(fn);
+        byte[] jarBytes = CodePacker.packClass(fn.getClass(), Main.class, RemoteFunction.class);
 
         Map<String, Object> requestBody = Map.of(
-                "functionStub", functionStub,
+                "serializedFunction", Base64.getEncoder().encodeToString(serializedFn),
+                "jarBytes", Base64.getEncoder().encodeToString(jarBytes),
                 "values", payloadValues,
                 "callback", "http://localhost:8087/callback"
         );
@@ -91,8 +97,4 @@ public class Cloud {
                 .toList();
     }
 
-    private String buildFunctionStub(RemoteFunction<?, ?> fn) {
-        String functionName = fn == null ? "unknown-function" : fn.getClass().getName();
-        return FUNCTION_STUB_PREFIX + functionName;
-    }
 }

@@ -43,11 +43,14 @@ public class TaskScheduler {
 
             List<Integer> batch = values.subList(i, end);
 
-            result.add(new WorkerTask(
+            WorkerTask wt = new WorkerTask(
                     task.getId(),
                     task.getFunctionStub(),
                     batch
-            ));
+            );
+            wt.setSerializedFunction(task.getSerializedFunction());
+            wt.setJarBytes(task.getJarBytes());
+            result.add(wt);
         }
 
         return result;

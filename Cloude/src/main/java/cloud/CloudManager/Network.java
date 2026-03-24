@@ -83,10 +83,12 @@ public class Network implements Runnable {
             try {
                 Map<String, Object> request = mapper.readValue(exchange.getRequestBody().readAllBytes(), Map.class);
                 String functionStub = String.valueOf(request.get("functionStub"));
+                String serializedFunction = String.valueOf(request.get("serializedFunction"));
+                String jarBytes = String.valueOf(request.get("jarBytes"));
                 List<Integer> values = parseIntegerList(request.get("values"));
                 String callback = String.valueOf(request.get("callback"));
 
-                Task task = new Task(functionStub, values, callback);
+                Task task = new Task(functionStub, serializedFunction, jarBytes, values, callback);
                 outgoingTasks.put(task);
 
                 writeJson(exchange, 200, Map.of("status", "accepted", "taskId", task.getId()));
