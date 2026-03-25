@@ -22,6 +22,7 @@ public class Network implements Runnable {
     private final int port;
     private final ObjectMapper mapper = new ObjectMapper();
     private final ConcurrentHashMap<String, TaskAggregator> aggregators;
+    private HttpServer server;
 
     public Network(
             BlockingQueue<Task> outgoingTasks,
@@ -40,7 +41,7 @@ public class Network implements Runnable {
     @Override
     public void run() {
         try {
-            HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+            this.server = HttpServer.create(new InetSocketAddress(port), 0);
             server.createContext("/execute", new ExecuteHandler());
             server.createContext("/register", new RegisterHandler());
             server.createContext("/result", new ResultHandler());
@@ -49,6 +50,12 @@ public class Network implements Runnable {
             System.out.println("Server started at http://localhost:" + port);
         } catch (IOException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    public void stop() {
+        if (server != null) {
+            server.stop(0);
         }
     }
 
@@ -83,10 +90,12 @@ public class Network implements Runnable {
             try {
                 Map<String, Object> request = mapper.readValue(exchange.getRequestBody().readAllBytes(), Map.class);
                 String functionStub = String.valueOf(request.get("functionStub"));
+                String serializedFunction = String.valueOf(request.get("serializedFunction"));
+                String jarBytes = String.valueOf(request.get("jarBytes"));
                 List<Integer> values = parseIntegerList(request.get("values"));
                 String callback = String.valueOf(request.get("callback"));
 
-                Task task = new Task(functionStub, values, callback);
+                Task task = new Task(functionStub, serializedFunction, jarBytes, values, callback);
                 outgoingTasks.put(task);
 
                 writeJson(exchange, 200, Map.of("status", "accepted", "taskId", task.getId()));

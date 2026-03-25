@@ -11,12 +11,26 @@ repositories {
 
 dependencies {
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.0'
+    implementation 'com.esotericsoftware:kryo:5.5.0'
+    implementation 'org.objenesis:objenesis:3.3'
     testImplementation platform('org.junit:junit-bom:5.10.0')
     testImplementation 'org.junit.jupiter:junit-jupiter'
 }
 
 test {
     useJUnitPlatform()
+    jvmArgs += [
+        '--add-opens', 'java.base/java.lang.invoke=ALL-UNNAMED',
+        '--add-opens', 'java.base/java.lang=ALL-UNNAMED'
+    ]
+}
+
+// Общие настройки для всех задач запуска
+tasks.withType(JavaExec) {
+    jvmArgs += [
+        '--add-opens', 'java.base/java.lang.invoke=ALL-UNNAMED',
+        '--add-opens', 'java.base/java.lang=ALL-UNNAMED'
+    ]
 }
 
 task runScheduler(type: JavaExec) {
@@ -25,6 +39,11 @@ task runScheduler(type: JavaExec) {
 }
 
 task runCluster(type: JavaExec) {
-    mainClass.set("cloud.Cluster.Cluster")
+    mainClass.set("cloud.Cluster.Worker")
+    classpath = sourceSets.main.runtimeClasspath
+}
+
+task runMain(type: JavaExec) {
+    mainClass.set("cloud.cloud.Main")
     classpath = sourceSets.main.runtimeClasspath
 }

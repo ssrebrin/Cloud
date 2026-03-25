@@ -10,6 +10,8 @@ public class WorkerTask implements Serializable {
     private String taskId;
     private String workerTaskId;
     private String functionStub;
+    private String serializedFunction;
+    private String jarBytes;
     private List<Integer> values;
     private ClusterInfo clusterInfo;
 
@@ -42,15 +44,31 @@ public class WorkerTask implements Serializable {
         return functionStub;
     }
 
-    public void setFunctionStub(String functionStub) {  // ✅
+    public void setFunctionStub(String functionStub) {
         this.functionStub = functionStub;
+    }
+
+    public String getSerializedFunction() {
+        return serializedFunction;
+    }
+
+    public void setSerializedFunction(String serializedFunction) {
+        this.serializedFunction = serializedFunction;
+    }
+
+    public String getJarBytes() {
+        return jarBytes;
+    }
+
+    public void setJarBytes(String jarBytes) {
+        this.jarBytes = jarBytes;
     }
 
     public List<Integer> getValues() {
         return values;
     }
 
-    public void setValues(List<Integer> values) {  // ✅
+    public void setValues(List<Integer> values) {
         this.values = values;
     }
 

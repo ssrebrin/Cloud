@@ -9,6 +9,8 @@ public class Task implements Serializable {
 
     private String id;
     private String functionStub;
+    private String serializedFunction;
+    private String jarBytes;
     private List<Integer> values;
     private String callback;
 
@@ -16,9 +18,11 @@ public class Task implements Serializable {
         // Default constructor for Jackson
     }
 
-    public Task(String functionStub, List<Integer> values, String callback) {
+    public Task(String functionStub, String serializedFunction, String jarBytes, List<Integer> values, String callback) {
         this.id = UUID.randomUUID().toString();
         this.functionStub = functionStub;
+        this.serializedFunction = serializedFunction;
+        this.jarBytes = jarBytes;
         this.values = new ArrayList<>(values);
         this.callback = callback;
     }
@@ -39,11 +43,35 @@ public class Task implements Serializable {
         this.functionStub = functionStub;
     }
 
+    public String getSerializedFunction() {
+        return serializedFunction;
+    }
+
+    public void setSerializedFunction(String serializedFunction) {
+        this.serializedFunction = serializedFunction;
+    }
+
+    public String getJarBytes() {
+        return jarBytes;
+    }
+
+    public void setJarBytes(String jarBytes) {
+        this.jarBytes = jarBytes;
+    }
+
     public List<Integer> getValues() {
         return values;
     }
 
     public void setValues(List<Integer> values) {
         this.values = values;
+    }
+
+    public String getCallback() {
+        return callback;
+    }
+
+    public void setCallback(String callback) {
+        this.callback = callback;
     }
 }
