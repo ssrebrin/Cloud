@@ -1,24 +1,46 @@
 plugins {
+
     id 'java'
+
 }
+
+
 
 group = 'cloude'
+
 version = '1.0-SNAPSHOT'
 
+
+
 repositories {
+
     mavenCentral()
+
 }
+
+
 
 dependencies {
+
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.0'
+<<<<<<< Updated upstream
     implementation 'com.esotericsoftware:kryo:5.5.0'
     implementation 'org.objenesis:objenesis:3.3'
+=======
+
+>>>>>>> Stashed changes
     testImplementation platform('org.junit:junit-bom:5.10.0')
+
     testImplementation 'org.junit.jupiter:junit-jupiter'
+
 }
 
+
+
 test {
+
     useJUnitPlatform()
+<<<<<<< Updated upstream
     jvmArgs += [
         '--add-opens', 'java.base/java.lang.invoke=ALL-UNNAMED',
         '--add-opens', 'java.base/java.lang=ALL-UNNAMED'
@@ -31,19 +53,36 @@ tasks.withType(JavaExec) {
         '--add-opens', 'java.base/java.lang.invoke=ALL-UNNAMED',
         '--add-opens', 'java.base/java.lang=ALL-UNNAMED'
     ]
+=======
+
+>>>>>>> Stashed changes
 }
+
+
 
 task runScheduler(type: JavaExec) {
+
     mainClass.set("cloud.CloudManager.TaskScheduler")
+
     classpath = sourceSets.main.runtimeClasspath
+
 }
 
+
+
 task runCluster(type: JavaExec) {
+<<<<<<< Updated upstream
     mainClass.set("cloud.Cluster.Worker")
     classpath = sourceSets.main.runtimeClasspath
 }
 
 task runMain(type: JavaExec) {
     mainClass.set("cloud.cloud.Main")
+=======
+
+    mainClass.set("cloud.Cluster.Cluster")
+
+>>>>>>> Stashed changes
     classpath = sourceSets.main.runtimeClasspath
+
 }
