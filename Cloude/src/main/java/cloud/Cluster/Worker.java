@@ -3,6 +3,7 @@ package cloud.Cluster;
 import cloud.CloudManager.Task;
 import cloud.CloudManager.TaskResult;
 import cloud.CloudManager.WorkerTask;
+import cloud.CloudManager.WorkerTaskStatus;
 import cloud.serialization.CloudClassLoader;
 import cloud.serialization.KryoSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -21,10 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.*;
 
 public class Worker {
 
@@ -42,6 +40,11 @@ public class Worker {
     private final BlockingQueue<TaskResult> Results;
 
     private final KryoSerializer serializer = new KryoSerializer();
+
+    private final Map<String, WorkerTaskStatus> activeTasks = new ConcurrentHashMap<>();
+    private final Map<String, Long> completedTasks = new ConcurrentHashMap<>();
+
+    private static final long COMPLETED_TTL_MS = 60_000;
 
     public TaskResult process(WorkerTask task) {
         try {
@@ -80,8 +83,16 @@ public class Worker {
                 while (!Thread.currentThread().isInterrupted()) {
                     try {
                         WorkerTask task = Tasks.take();
+
+                        activeTasks.put(task.getWorkerTaskId(), WorkerTaskStatus.PENDING);
+
                         TaskResult result = process(task);
+
+                        activeTasks.remove(task.getWorkerTaskId());
+                        completedTasks.put(task.getWorkerTaskId(), System.currentTimeMillis());
+
                         Results.put(result);
+
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                     } catch (Exception e) {
@@ -146,6 +157,7 @@ public class Worker {
         startWorkers(this.workerThreads);
         this.server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/execute", new ExecuteHandler());
+        server.createContext("/health", new HealthHandler());
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
         System.out.println("Cluster server started on port " + port);
@@ -189,6 +201,61 @@ public class Worker {
                 ));
             }
         }
+    }
+
+    private class HealthHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+
+            if (!"GET".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+
+            String path = exchange.getRequestURI().getPath();
+            String[] parts = path.split("/");
+
+            if (parts.length < 3) {
+                exchange.sendResponseHeaders(400, -1);
+                return;
+            }
+
+            String workerTaskId = parts[2];
+
+            if (activeTasks.containsKey(workerTaskId)) {
+                exchange.sendResponseHeaders(200, -1);
+                return;
+            }
+
+            if (completedTasks.containsKey(workerTaskId)) {
+                exchange.sendResponseHeaders(204, -1);
+                return;
+            }
+
+            exchange.sendResponseHeaders(404, -1);
+        }
+    }
+
+    private void startCleanupThread() {
+        Thread cleaner = new Thread(() -> {
+            while (true) {
+                try {
+                    long now = System.currentTimeMillis();
+
+                    completedTasks.entrySet().removeIf(entry ->
+                            now - entry.getValue() > COMPLETED_TTL_MS
+                    );
+
+                    Thread.sleep(5000);
+
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        });
+
+        cleaner.setDaemon(true);
+        cleaner.start();
     }
 
     private void sendResultToManager(TaskResult result) {
@@ -247,7 +314,7 @@ public class Worker {
     public static void main(String[] args) throws IOException {
         Worker worker = new Worker("localhost", 8085, "localhost", 8086, 5);
         worker.startServer();
-        worker.startWorkers(1);
+        worker.startCleanupThread();
         worker.startResultSender();
     }
 }
