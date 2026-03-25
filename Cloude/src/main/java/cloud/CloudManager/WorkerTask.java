@@ -11,6 +11,7 @@ public class WorkerTask implements Serializable {
     private String workerTaskId;
     private String functionStub;
     private List<Integer> values;
+    private ClusterInfo clusterInfo;
 
     public WorkerTask() {}
 
@@ -51,5 +52,13 @@ public class WorkerTask implements Serializable {
 
     public void setValues(List<Integer> values) {  // ✅
         this.values = values;
+    }
+
+    public ClusterInfo getClusterInfo() {
+        return clusterInfo;
+    }
+
+    public void setClusterInfo(ClusterInfo clusterInfo) {
+        this.clusterInfo = clusterInfo;
     }
 }

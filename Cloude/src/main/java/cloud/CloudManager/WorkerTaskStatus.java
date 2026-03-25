@@ -3,5 +3,6 @@ package cloud.CloudManager;
 public enum WorkerTaskStatus {
     PENDING,
     DONE,
-    ERROR
+    ERROR,
+    NOT_FOUND
 }

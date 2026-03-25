@@ -19,6 +19,7 @@ public class TaskScheduler {
     private final TaskSender taskSender;
     private final ExecutorService dispatcher;
     private int currentIndex = 0;
+    private HealthChecker healthChecker;
 
     public TaskScheduler(int managerPort) {
         this.outgoingTasks = new LinkedBlockingQueue<>();
@@ -28,9 +29,11 @@ public class TaskScheduler {
         this.network = new Network(outgoingTasks, clusters, completedResults, aggregators, managerPort);
         this.taskSender = new TaskSender();
         this.dispatcher = Executors.newSingleThreadExecutor();
+        this.healthChecker = new HealthChecker(aggregators, taskSender);
 
         new Thread(network).start();
         dispatcher.submit(this::dispatchLoop);
+        this.healthChecker.start();
     }
 
     public static List<WorkerTask> splitTask(Task task, int batchSize) {
@@ -96,6 +99,8 @@ public class TaskScheduler {
                                     wt
                             );
                             sent = true;
+                            wt.setClusterInfo(cluster);
+                            this.healthChecker.register(wt);
                             break;
 
                         } catch (Exception e) {

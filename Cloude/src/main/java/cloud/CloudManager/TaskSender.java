@@ -55,4 +55,24 @@ public class TaskSender {
                 .map(value -> ((Number) value).intValue())
                 .toList();
     }
+
+    public WorkerTaskStatus checkStatus(String host, int port, String workerTaskId) {
+        try {
+            URL url = new URL("http://" + host + ":" + port + "/health/" + workerTaskId);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+
+            conn.setRequestMethod("GET");
+
+            int code = conn.getResponseCode();
+
+            if (code == 200) return WorkerTaskStatus.PENDING;
+            if (code == 204) return WorkerTaskStatus.DONE;
+            if (code == 404) return WorkerTaskStatus.NOT_FOUND;
+
+        } catch (Exception e) {
+            return WorkerTaskStatus.NOT_FOUND;
+        }
+
+        return WorkerTaskStatus.NOT_FOUND;
+    }
 }
