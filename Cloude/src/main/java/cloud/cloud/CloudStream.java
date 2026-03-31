@@ -1,6 +1,7 @@
 package cloud.cloud;
 
 import cloud.domain.RemoteFunction;
+import cloud.domain.RemoteReducer;
 import cloud.domain.Operation;
 import cloud.serialization.CodePacker;
 import cloud.serialization.KryoSerializer;
@@ -13,14 +14,13 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.*;
-import java.util.stream.Collectors;
 
 public class CloudStream<T extends Serializable> {
     private final String managerUrl;
     private final HttpClient client;
     private final ObjectMapper mapper;
     private final KryoSerializer serializer;
-    private T Data;
+    private List<T> values;
     List<Operation> ops = new ArrayList<>();
 
 
@@ -31,13 +31,37 @@ public class CloudStream<T extends Serializable> {
         this.serializer = new KryoSerializer();
     }
 
-    public static CloudStream connect(String url) {
+    public static <T extends Serializable> CloudStream<T> connect(String url) {
         return new CloudStream(url);
     }
 
-    public CloudStream SetData(T Data) {
-        this.Data = Data;
+    public CloudStream<T> stream(List<T> values) {
+        this.values = new ArrayList<>(values);
         return this;
+    }
+
+    public CloudStream<T> stream(T[] values) {
+        this.values = new ArrayList<>(Arrays.asList(values));
+        return this;
+    }
+
+    @SuppressWarnings("unchecked")
+    public CloudStream<T> stream(int[] values) {
+        List<Integer> boxed = Arrays.stream(values).boxed().toList();
+        this.values = (List<T>) boxed;
+        return this;
+    }
+
+    public CloudStream<T> SetData(List<T> values) {
+        return stream(values);
+    }
+
+    public CloudStream<T> SetData(T[] values) {
+        return stream(values);
+    }
+
+    public CloudStream<T> SetData(int[] values) {
+        return stream(values);
     }
 
     public <R extends Serializable> CloudStream<R> map(RemoteFunction<T, R> f) {
@@ -50,23 +74,34 @@ public class CloudStream<T extends Serializable> {
         return this;
     }
 
-    public List<T> execute(int[] values, Class<?>... extraClasses)
+
+    public CloudStream<T> reduce(RemoteReducer<T> f) {
+        ops.add(new Operation("reduce", serializer.serialize(f)));
+        return this;
+    }
+
+    public List<T> execute(Class<?>... extraClasses)
             throws IOException, InterruptedException {
 
-        List<Object> payloadValues = Arrays.stream(values).boxed().collect(Collectors.toList());
+        if (values == null) {
+            throw new IllegalStateException("No input data. Call stream(...) before execute().");
+        }
+
+        List<Object> payloadValues = new ArrayList<>(values);
 
         // Объединяем обязательные классы и дополнительные
-        Class<?>[] allForJar = new Class<?>[extraClasses.length + 3];
+        Class<?>[] allForJar = new Class<?>[extraClasses.length + 4];
         allForJar[0] = Main.class;
         allForJar[1] = RemoteFunction.class;
-        allForJar[2] = Operation.class;
-        System.arraycopy(extraClasses, 0, allForJar, 3, extraClasses.length);
+        allForJar[2] = RemoteReducer.class;
+        allForJar[3] = Operation.class;
+        System.arraycopy(extraClasses, 0, allForJar, 4, extraClasses.length);
 
         byte[] jarBytes = CodePacker.packClass(allForJar);
 
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("ops", ops);
-        requestBody.put("data", values);
+        requestBody.put("data", payloadValues);
         requestBody.put("jarBytes", Base64.getEncoder().encodeToString(jarBytes));
         requestBody.put("values", payloadValues);
         requestBody.put("callback", "http://localhost:8087/callback");
@@ -117,9 +152,12 @@ public class CloudStream<T extends Serializable> {
 
     @SuppressWarnings("unchecked")
     private List<T> parseResultList(Object rawList) {
-        if (!(rawList instanceof List<?> list)) {
+        if (rawList == null) {
             return List.of();
         }
-        return (List<T>) list;
+        if (rawList instanceof List<?> list) {
+            return (List<T>) list;
+        }
+        return List.of((T) rawList);
     }
 }

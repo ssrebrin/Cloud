@@ -17,10 +17,13 @@ import java.util.concurrent.LinkedBlockingQueue;
 
 public class TaskScheduler {
 
+    private static final int BATCH_SIZE = 10;
+
     private final BlockingQueue<Task> outgoingTasks;
     private final ConcurrentHashMap<String, ClusterInfo> clusters;
     private final ConcurrentHashMap<String, TaskResult<?>> completedResults;
     private final ConcurrentHashMap<String, TaskAggregator> aggregators;
+    private final ConcurrentHashMap<String, ReduceState> reduceStates;
     // Track pipeline execution state: taskId -> current data for next operation
     private final ConcurrentHashMap<String, Object> pipelineData;
     // Track active (sent) tasks for pipeline lookup
@@ -38,6 +41,7 @@ public class TaskScheduler {
         this.clusters = new ConcurrentHashMap<>();
         this.completedResults = new ConcurrentHashMap<>();
         this.aggregators = new ConcurrentHashMap<>();
+        this.reduceStates = new ConcurrentHashMap<>();
         this.pipelineData = new ConcurrentHashMap<>();
         this.activeTasks = new ConcurrentHashMap<>();
         this.pipelineTracker = new PipelineTaskTracker();
@@ -105,7 +109,7 @@ public class TaskScheduler {
                     sendPipelineOperation(task, task.getInitialData());
                 } else {
                     // Handle legacy task - split and send as before
-                    List<WorkerTask> workerTasks = splitTask(task, 10);
+                    List<WorkerTask> workerTasks = splitTask(task, BATCH_SIZE);
                     TaskAggregator aggregator = new TaskAggregator(task.getId(), workerTasks);
                     aggregators.put(task.getId(), aggregator);
                     // Store as active task
@@ -137,6 +141,10 @@ public class TaskScheduler {
         if (currentOp == null) {
             // Pipeline complete
             System.out.println("Pipeline complete for task: " + task.getId());
+            return;
+        }
+        if (isReduceOperation(currentOp)) {
+            startReduce(task, currentOp, currentData);
             return;
         }
         // Create WorkerTask for this single operation
@@ -195,10 +203,17 @@ public class TaskScheduler {
     
     // Called when a pipeline operation result is received
     public void onPipelineResult(Task task, TaskResult result) {
-        // Mark the operation as complete in tracker
-        String currentWorkerTaskId = pipelineTracker.getTaskForOperation(task.getId(), task.getCurrentOpIndex());
-        if (currentWorkerTaskId != null) {
-            pipelineTracker.complete(currentWorkerTaskId);
+        // Mark the operation as complete in tracker for this worker task
+        if (result.isSuccess()) {
+            pipelineTracker.complete(result.getWorkerTaskId());
+        } else {
+            pipelineTracker.fail(result.getWorkerTaskId());
+        }
+
+        Operation currentOp = task.getCurrentOp();
+        if (currentOp != null && isReduceOperation(currentOp)) {
+            onReduceResult(task, result);
+            return;
         }
         
         if (!result.isSuccess()) {
@@ -226,6 +241,114 @@ public class TaskScheduler {
         }
     }
 
+    private boolean isReduceOperation(Operation op) {
+        return op != null && "reduce".equalsIgnoreCase(op.type);
+    }
+
+    private String reduceKey(String taskId, int opIndex) {
+        return taskId + ":" + opIndex;
+    }
+
+    private void startReduce(Task task, Operation op, Object currentData) {
+        if (!(currentData instanceof List<?> dataList)) {
+            completeReduce(task, currentData);
+            return;
+        }
+        if (dataList.isEmpty()) {
+            completeReduce(task, null);
+            return;
+        }
+        if (dataList.size() == 1) {
+            completeReduce(task, dataList.get(0));
+            return;
+        }
+
+        String key = reduceKey(task.getId(), task.getCurrentOpIndex());
+        ReduceState state = reduceStates.computeIfAbsent(key, k -> new ReduceState(op));
+        dispatchReduceRound(task, state, dataList);
+    }
+
+    private void dispatchReduceRound(Task task, ReduceState state, List<?> dataList) {
+        ReduceRound round = new ReduceRound();
+        state.currentRound = round;
+
+        for (int i = 0; i < dataList.size(); i += BATCH_SIZE) {
+            int end = Math.min(i + BATCH_SIZE, dataList.size());
+            List<Object> batch = new ArrayList<>(dataList.subList(i, end));
+
+            WorkerTask workerTask = new WorkerTask(
+                    task.getId(),
+                    state.operation,
+                    batch,
+                    task.getCurrentOpIndex(),
+                    task.getOps().size()
+            );
+            workerTask.setJarBytes(task.getJarBytes());
+            round.register(workerTask.getWorkerTaskId());
+            sendWorkerTask(workerTask, task);
+        }
+    }
+
+    private void onReduceResult(Task task, TaskResult result) {
+        String key = reduceKey(task.getId(), task.getCurrentOpIndex());
+        ReduceState state = reduceStates.get(key);
+        if (state == null) {
+            return;
+        }
+
+        synchronized (state) {
+            if (state.failed) {
+                return;
+            }
+            ReduceRound round = state.currentRound;
+            if (round == null || !round.markCompleted(result.getWorkerTaskId())) {
+                return;
+            }
+
+            if (!result.isSuccess()) {
+                state.failed = true;
+                completedResults.put(task.getId(), result);
+                activeTasks.remove(task.getId());
+                pipelineTracker.cleanupTask(task.getId());
+                reduceStates.remove(key);
+                return;
+            }
+
+            if (result.getResult() != null) {
+                round.results.add(result.getResult());
+            }
+
+            if (round.isComplete()) {
+                List<Object> partials = new ArrayList<>(round.results);
+
+                if (partials.isEmpty()) {
+                    reduceStates.remove(key);
+                    completeReduce(task, null);
+                    return;
+                }
+
+                if (partials.size() == 1) {
+                    reduceStates.remove(key);
+                    completeReduce(task, partials.get(0));
+                    return;
+                }
+
+                dispatchReduceRound(task, state, partials);
+            }
+        }
+    }
+
+    private void completeReduce(Task task, Object reducedValue) {
+        if (task.isLastOp()) {
+            completedResults.put(task.getId(), new TaskResult<>(task.getId(), reducedValue, null, ""));
+            activeTasks.remove(task.getId());
+            pipelineTracker.cleanupTask(task.getId());
+            return;
+        }
+        task.advanceOp();
+        sendPipelineOperation(task, reducedValue);
+    }
+
     private ClusterInfo pickCluster() {
         if (clusters.isEmpty()) {
             return null;
@@ -235,11 +358,39 @@ public class TaskScheduler {
 
     public void shutdown() {
         dispatcher.shutdownNow();
+        healthChecker.stop();
         network.stop();
     }
 
     public static void main(String[] args) {
         System.out.println("Initializing manager on port 8085...");
         new TaskScheduler(8085);
+    }
+
+    private static class ReduceState {
+        private final Operation operation;
+        private ReduceRound currentRound;
+        private boolean failed;
+
+        private ReduceState(Operation operation) {
+            this.operation = operation;
+        }
+    }
+
+    private static class ReduceRound {
+        private final java.util.Set<String> pending = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        private final java.util.Queue<Object> results = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+        void register(String workerTaskId) {
+            pending.add(workerTaskId);
+        }
+
+        boolean markCompleted(String workerTaskId) {
+            return pending.remove(workerTaskId);
+        }
+
+        boolean isComplete() {
+            return pending.isEmpty();
+        }
     }
 }

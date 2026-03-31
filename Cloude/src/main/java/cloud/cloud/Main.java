@@ -3,6 +3,7 @@ package cloud.cloud;
 import cloud.demo.Calculator;
 import cloud.demo.ComplexTask;
 import cloud.domain.RemoteFunction;
+import cloud.domain.RemoteReducer;
 
 import java.io.IOException;
 import java.util.List;
@@ -28,8 +29,12 @@ public class Main {
         //List<Integer> result = cloud.execute(f, new int[]{5, 6, 7, 8},
         //        Calculator.class, ComplexTask.class);
 
-        List<Integer> result = CloudStream.connect("http://localhost:8085").filter((RemoteFunction<Integer, Boolean>)(x -> x%2 == 0? true: false)).map((RemoteFunction<Integer, Integer>)x -> x*2).execute(new int[]{5, 6, 7, 8},
-                        Calculator.class, ComplexTask.class);
+        List<Integer> result = CloudStream.<Integer>connect("http://localhost:8085")
+                .stream(new int[]{5, 6, 7, 8})
+                .filter(x -> x % 2 == 0)
+                .map(x -> x * 2)
+                .reduce((x, y) -> x * y)
+                .execute(Calculator.class, ComplexTask.class);
         
         System.out.println("Result (Fibonacci * 2): " + result);
     }

@@ -13,6 +13,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
@@ -155,7 +156,11 @@ public class Network implements Runnable {
                     }
 
                     if (result.isSuccess()) {
-                        writeJson(exchange, 200, Map.of("status", "done", "taskId", taskId, "result", result.getResult()));
+                        Map<String, Object> payload = new HashMap<>();
+                        payload.put("status", "done");
+                        payload.put("taskId", taskId);
+                        payload.put("result", result.getResult());
+                        writeJson(exchange, 200, payload);
                     } else {
                         writeJson(exchange, 200, Map.of("status", "error", "taskId", taskId, "error", result.getError()));
                     }

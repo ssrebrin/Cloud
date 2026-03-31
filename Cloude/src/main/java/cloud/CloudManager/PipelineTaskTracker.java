@@ -41,7 +41,7 @@ public class PipelineTaskTracker {
         if (task != null) {
             PipelineState state = pipelineStates.get(task.getTaskId());
             if (state != null) {
-                state.markComplete(task.getOperationIndex());
+                state.markComplete(task.getOperationIndex(), workerTaskId);
             }
         }
     }
@@ -104,31 +104,60 @@ public class PipelineTaskTracker {
      */
     private static class PipelineState {
         private final int totalOperations;
-        private final Map<Integer, String> operationIndexToWorkerTaskId = new ConcurrentHashMap<>();
-        private final Map<Integer, Boolean> completedOperations = new ConcurrentHashMap<>();
+        private final Map<Integer, java.util.Set<String>> operationIndexToWorkerTaskIds = new ConcurrentHashMap<>();
+        private final Map<Integer, java.util.Set<String>> completedOperationTasks = new ConcurrentHashMap<>();
 
         PipelineState(int totalOperations) {
             this.totalOperations = totalOperations;
         }
 
         void registerOperation(int index, String workerTaskId) {
-            operationIndexToWorkerTaskId.put(index, workerTaskId);
+            operationIndexToWorkerTaskIds
+                    .computeIfAbsent(index, k -> ConcurrentHashMap.newKeySet())
+                    .add(workerTaskId);
         }
 
-        void markComplete(int index) {
-            completedOperations.put(index, true);
+        void markComplete(int index, String workerTaskId) {
+            completedOperationTasks
+                    .computeIfAbsent(index, k -> ConcurrentHashMap.newKeySet())
+                    .add(workerTaskId);
         }
 
         boolean isComplete() {
-            return completedOperations.size() >= totalOperations;
+            if (operationIndexToWorkerTaskIds.isEmpty()) {
+                return false;
+            }
+            for (int i = 0; i < totalOperations; i++) {
+                if (!isOperationComplete(i)) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         String getWorkerTaskIdForOperation(int index) {
-            return operationIndexToWorkerTaskId.get(index);
+            java.util.Set<String> ids = operationIndexToWorkerTaskIds.get(index);
+            if (ids == null || ids.isEmpty()) {
+                return null;
+            }
+            return ids.iterator().next();
         }
 
         java.util.Collection<String> getAllWorkerTaskIds() {
-            return operationIndexToWorkerTaskId.values();
+            java.util.List<String> result = new java.util.ArrayList<>();
+            for (java.util.Set<String> ids : operationIndexToWorkerTaskIds.values()) {
+                result.addAll(ids);
+            }
+            return result;
+        }
+
+        private boolean isOperationComplete(int index) {
+            java.util.Set<String> registered = operationIndexToWorkerTaskIds.get(index);
+            if (registered == null || registered.isEmpty()) {
+                return false;
+            }
+            java.util.Set<String> completed = completedOperationTasks.get(index);
+            return completed != null && completed.containsAll(registered);
         }
     }
 }

@@ -80,6 +80,7 @@ public class Worker {
 
         } catch (Exception e) {
             e.printStackTrace();
+            System.out.println(e.getMessage());
             return new TaskResult<>(task.getTaskId(), null, e.getMessage(), task.getWorkerTaskId());
         }
     }
@@ -143,7 +144,7 @@ public class Worker {
     
     @SuppressWarnings({"unchecked", "rawtypes"})
     private TaskResult handleReduce(WorkerTask task, Operation op, Object currentData, CloudClassLoader classLoader) throws Exception {
-        cloud.domain.RemoteFunction reducer = (cloud.domain.RemoteFunction) serializer.deserialize(op.function, classLoader);
+        cloud.domain.RemoteReducer reducer = (cloud.domain.RemoteReducer) serializer.deserialize(op.function, classLoader);
         
         if (currentData instanceof List<?> dataList) {
             if (dataList.isEmpty()) {
@@ -154,9 +155,7 @@ public class Worker {
             // Apply reduction: result = fn(acc, element)
             Object result = dataList.get(0);
             for (int i = 1; i < dataList.size(); i++) {
-                // Create a pair for reduction - this is a simple approach
-                // In practice, you might want a specific ReduceFunction interface
-                result = reducer.apply((Serializable) result);
+                result = reducer.apply((Serializable) result, (Serializable) dataList.get(i));
             }
             System.out.println("Reduce operation completed");
             return new TaskResult<>(task.getTaskId(), result, null, task.getWorkerTaskId());
