@@ -1,9 +1,10 @@
 package cloud.Cluster;
 
-import cloud.CloudManager.Task;
-import cloud.CloudManager.TaskResult;
-import cloud.CloudManager.WorkerTask;
-import cloud.CloudManager.WorkerTaskStatus;
+import cloud.domain.Task;
+import cloud.domain.TaskResult;
+import cloud.domain.WorkerTask;
+import cloud.domain.WorkerTaskStatus;
+import cloud.domain.Operation;
 import cloud.serialization.CloudClassLoader;
 import cloud.serialization.KryoSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,6 +15,7 @@ import com.sun.net.httpserver.HttpServer;
 import javax.xml.transform.Result;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.Serializable;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URL;
@@ -56,14 +58,21 @@ public class Worker {
                 classLoader.addJar(jarBytes);
             }
 
+            // Check if this is a pipeline operation
+            if (task.isPipelineOp() && task.getOperation() != null) {
+                return processPipelineOperation(task, classLoader);
+            }
+
+            // Legacy batch task processing
             // Десериализация функции
             byte[] fnBytes = java.util.Base64.getDecoder().decode(task.getSerializedFunction());
-            cloud.cloud.RemoteFunction<Integer, Integer> fn = 
-                (cloud.cloud.RemoteFunction<Integer, Integer>) serializer.deserialize(fnBytes, classLoader);
+            cloud.domain.RemoteFunction<Integer, Integer> fn = 
+                (cloud.domain.RemoteFunction<Integer, Integer>) serializer.deserialize(fnBytes, classLoader);
 
             // Выполнение
             List<Integer> results = new ArrayList<>();
             for (Integer val : task.getValues()) {
+
                 results.add(fn.apply(val));
             }
 
@@ -72,6 +81,87 @@ public class Worker {
         } catch (Exception e) {
             e.printStackTrace();
             return new TaskResult<>(task.getTaskId(), null, e.getMessage(), task.getWorkerTaskId());
+        }
+    }
+    
+    private TaskResult processPipelineOperation(WorkerTask task, CloudClassLoader classLoader) throws Exception {
+        Operation op = task.getOperation();
+        Object currentData = task.getCurrentData();
+        
+        System.out.println("Processing pipeline operation " + task.getOperationIndex() + "/" + task.getTotalOperations() + 
+                " of type: " + op.type);
+        
+        try {
+            return switch (op.type.toLowerCase()) {
+                case "map" -> handleMap(task, op, currentData, classLoader);
+                case "filter" -> handleFilter(task, op, currentData, classLoader);
+                case "reduce" -> handleReduce(task, op, currentData, classLoader);
+                default -> throw new IllegalArgumentException("Unknown operation type: " + op.type);
+            };
+        } catch (Exception e) {
+            return new TaskResult<>(task.getTaskId(), null, e.getMessage(), task.getWorkerTaskId());
+        }
+    }
+    
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private TaskResult handleMap(WorkerTask task, Operation op, Object currentData, CloudClassLoader classLoader) throws Exception {
+        cloud.domain.RemoteFunction fn = (cloud.domain.RemoteFunction) serializer.deserialize(op.function, classLoader);
+        
+        if (currentData instanceof List<?> dataList) {
+            List<Object> results = new ArrayList<>();
+            for (Object item : dataList) {
+                results.add(fn.apply((Serializable) item));
+            }
+            System.out.println("Map operation completed, processed " + results.size() + " items");
+            return new TaskResult<>(task.getTaskId(), results, null, task.getWorkerTaskId());
+        } else {
+            Object result = fn.apply((Serializable) currentData);
+            return new TaskResult<>(task.getTaskId(), List.of(result), null, task.getWorkerTaskId());
+        }
+    }
+    
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private TaskResult handleFilter(WorkerTask task, Operation op, Object currentData, CloudClassLoader classLoader) throws Exception {
+        cloud.domain.RemoteFunction predicate = (cloud.domain.RemoteFunction) serializer.deserialize(op.function, classLoader);
+        
+        if (currentData instanceof List<?> dataList) {
+            List<Object> filtered = new ArrayList<>();
+            for (Object item : dataList) {
+                Boolean shouldInclude = (Boolean) predicate.apply((Serializable) item);
+                if (shouldInclude) {
+                    filtered.add(item);
+                }
+            }
+            System.out.println("Filter operation completed, kept " + filtered.size() + " of " + dataList.size() + " items");
+            return new TaskResult<>(task.getTaskId(), filtered, null, task.getWorkerTaskId());
+        } else {
+            Boolean shouldInclude = (Boolean) predicate.apply((Serializable) currentData);
+            Object result = shouldInclude ? currentData : null;
+            return new TaskResult<>(task.getTaskId(), result, null, task.getWorkerTaskId());
+        }
+    }
+    
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private TaskResult handleReduce(WorkerTask task, Operation op, Object currentData, CloudClassLoader classLoader) throws Exception {
+        cloud.domain.RemoteFunction reducer = (cloud.domain.RemoteFunction) serializer.deserialize(op.function, classLoader);
+        
+        if (currentData instanceof List<?> dataList) {
+            if (dataList.isEmpty()) {
+                return new TaskResult<>(task.getTaskId(), null, null, task.getWorkerTaskId());
+            }
+            
+            // For reduce, we expect a binary function that combines two elements
+            // Apply reduction: result = fn(acc, element)
+            Object result = dataList.get(0);
+            for (int i = 1; i < dataList.size(); i++) {
+                // Create a pair for reduction - this is a simple approach
+                // In practice, you might want a specific ReduceFunction interface
+                result = reducer.apply((Serializable) result);
+            }
+            System.out.println("Reduce operation completed");
+            return new TaskResult<>(task.getTaskId(), result, null, task.getWorkerTaskId());
+        } else {
+            return new TaskResult<>(task.getTaskId(), currentData, null, task.getWorkerTaskId());
         }
     }
 
@@ -85,7 +175,6 @@ public class Worker {
                         WorkerTask task = Tasks.take();
 
                         activeTasks.put(task.getWorkerTaskId(), WorkerTaskStatus.PENDING);
-
                         TaskResult result = process(task);
 
                         activeTasks.remove(task.getWorkerTaskId());

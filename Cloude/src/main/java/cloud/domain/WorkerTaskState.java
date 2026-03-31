@@ -1,4 +1,4 @@
-package cloud.CloudManager;
+package cloud.domain;
 
 import java.util.List;
 

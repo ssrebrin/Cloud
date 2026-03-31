@@ -1,60 +1,75 @@
 package cloud.cloud;
 
 import cloud.domain.RemoteFunction;
+import cloud.domain.Operation;
 import cloud.serialization.CodePacker;
 import cloud.serialization.KryoSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.io.Serializable;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
 
-public class Cloud {
-
+public class CloudStream<T extends Serializable> {
     private final String managerUrl;
     private final HttpClient client;
     private final ObjectMapper mapper;
     private final KryoSerializer serializer;
+    private T Data;
+    List<Operation> ops = new ArrayList<>();
 
-    private Cloud(String managerUrl) {
+
+    private CloudStream(String managerUrl) {
         this.managerUrl = managerUrl;
         this.client = HttpClient.newHttpClient();
         this.mapper = new ObjectMapper();
         this.serializer = new KryoSerializer();
     }
 
-    public static Cloud connect(String url) {
-        return new Cloud(url);
+    public static CloudStream connect(String url) {
+        return new CloudStream(url);
     }
 
-    public List<Integer> execute(RemoteFunction<Integer, Integer> fn, int[] values, Class<?>... extraClasses)
+    public CloudStream SetData(T Data) {
+        this.Data = Data;
+        return this;
+    }
+
+    public <R extends Serializable> CloudStream<R> map(RemoteFunction<T, R> f) {
+        ops.add(new Operation("map", serializer.serialize(f)));
+        return (CloudStream <R>) this;
+    }
+
+    public CloudStream<T> filter(RemoteFunction<T, Boolean> f) {
+        ops.add(new Operation("filter", serializer.serialize(f)));
+        return this;
+    }
+
+    public List<T> execute(int[] values, Class<?>... extraClasses)
             throws IOException, InterruptedException {
 
-        List<Integer> payloadValues = Arrays.stream(values).boxed().toList();
+        List<Object> payloadValues = Arrays.stream(values).boxed().collect(Collectors.toList());
 
-        byte[] serializedFn = serializer.serialize(fn);
-        
         // Объединяем обязательные классы и дополнительные
         Class<?>[] allForJar = new Class<?>[extraClasses.length + 3];
-        allForJar[0] = fn.getClass();
-        allForJar[1] = Main.class;
-        allForJar[2] = RemoteFunction.class;
+        allForJar[0] = Main.class;
+        allForJar[1] = RemoteFunction.class;
+        allForJar[2] = Operation.class;
         System.arraycopy(extraClasses, 0, allForJar, 3, extraClasses.length);
-        
+
         byte[] jarBytes = CodePacker.packClass(allForJar);
 
-        Map<String, Object> requestBody = Map.of(
-                "serializedFunction", Base64.getEncoder().encodeToString(serializedFn),
-                "jarBytes", Base64.getEncoder().encodeToString(jarBytes),
-                "values", payloadValues,
-                "callback", "http://localhost:8087/callback"
-        );
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("ops", ops);
+        requestBody.put("data", values);
+        requestBody.put("jarBytes", Base64.getEncoder().encodeToString(jarBytes));
+        requestBody.put("values", payloadValues);
+        requestBody.put("callback", "http://localhost:8087/callback");
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(managerUrl + "/execute"))
@@ -70,10 +85,14 @@ public class Cloud {
         }
 
         String taskId = String.valueOf(responseMap.get("taskId"));
+        
+        // Очищаем ops после отправки для возможности переиспользования
+        ops.clear();
+        
         return waitForResult(taskId);
     }
 
-    private List<Integer> waitForResult(String taskId) throws IOException, InterruptedException {
+    private List<T> waitForResult(String taskId) throws IOException, InterruptedException {
         while (true) {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(managerUrl + "/result/" + taskId))
@@ -85,7 +104,7 @@ public class Cloud {
             String status = String.valueOf(resultMap.get("status"));
 
             if ("done".equals(status)) {
-                return parseIntegerList(resultMap.get("result"));
+                return parseResultList(resultMap.get("result"));
             }
 
             if ("error".equals(status)) {
@@ -96,14 +115,11 @@ public class Cloud {
         }
     }
 
-    private List<Integer> parseIntegerList(Object rawList) {
+    @SuppressWarnings("unchecked")
+    private List<T> parseResultList(Object rawList) {
         if (!(rawList instanceof List<?> list)) {
             return List.of();
         }
-
-        return list.stream()
-                .map(value -> ((Number) value).intValue())
-                .toList();
+        return (List<T>) list;
     }
-
 }

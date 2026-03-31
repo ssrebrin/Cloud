@@ -1,11 +1,16 @@
 package cloud.CloudManager;
 
+import cloud.domain.ClusterInfo;
+import cloud.domain.WorkerTask;
+import cloud.domain.WorkerTaskStatus;
+
 import java.util.Map;
 import java.util.concurrent.*;
 
 public class HealthChecker {
 
     private final Map<String, TaskAggregator> aggregators;
+    private final PipelineTaskTracker pipelineTracker;
 
     // workerTaskId → время отправки
     private final ConcurrentHashMap<String, Long> sendTimes = new ConcurrentHashMap<>();
@@ -20,8 +25,10 @@ public class HealthChecker {
     private static final long GRACE_PERIOD_MS = 2000;
 
     public HealthChecker(Map<String, TaskAggregator> aggregators,
+                         PipelineTaskTracker pipelineTracker,
                          TaskSender taskSender) {
         this.aggregators = aggregators;
+        this.pipelineTracker = pipelineTracker;
         this.taskSender = taskSender;
     }
 
@@ -33,10 +40,15 @@ public class HealthChecker {
         scheduler.shutdownNow();
     }
 
-    // 👉 вызывается при отправке задачи
+    // вызывается при отправке задачи (как batch, так и pipeline)
     public void register(WorkerTask task) {
         tasks.put(task.getWorkerTaskId(), task);
         sendTimes.put(task.getWorkerTaskId(), System.currentTimeMillis());
+
+        // Register with pipeline tracker if it's a pipeline operation
+        if (task.isPipelineOp()) {
+            pipelineTracker.register(task);
+        }
     }
 
     private void check() {
@@ -47,14 +59,8 @@ public class HealthChecker {
             String workerTaskId = task.getWorkerTaskId();
             String taskId = task.getTaskId();
 
-            TaskAggregator aggregator = aggregators.get(taskId);
-
-            if (aggregator == null) {
-                continue;
-            }
-
-            // уже завершена
-            if (aggregator.isFinished()) {
+            // Check if already finished
+            if (isTaskFinished(task, workerTaskId)) {
                 cleanup(workerTaskId);
                 continue;
             }
@@ -63,6 +69,10 @@ public class HealthChecker {
                 WorkerTaskStatus status = checkWorker(task);
 
                 if (status == WorkerTaskStatus.DONE) {
+                    // Mark as complete in appropriate tracker
+                    if (task.isPipelineOp()) {
+                        pipelineTracker.complete(workerTaskId);
+                    }
                     cleanup(workerTaskId);
                     continue;
                 }
@@ -76,11 +86,11 @@ public class HealthChecker {
                     long sentAt = sendTimes.getOrDefault(workerTaskId, now);
 
                     if (now - sentAt < GRACE_PERIOD_MS) {
-                        // ⏳ результат может быть "в пути"
+                        // результат может быть "в пути"
                         continue;
                     }
 
-                    // ❗ считаем потерянной → retry
+                    // считаем потерянной → retry
                     retry(task);
                 }
 
@@ -90,8 +100,18 @@ public class HealthChecker {
         }
     }
 
+    private boolean isTaskFinished(WorkerTask task, String workerTaskId) {
+        // For pipeline tasks, check pipeline tracker
+        if (task.isPipelineOp()) {
+            return pipelineTracker.isFinished(workerTaskId);
+        }
+        // For batch tasks, check aggregator
+        TaskAggregator aggregator = aggregators.get(task.getTaskId());
+        return aggregator != null && aggregator.isFinished();
+    }
+
     private WorkerTaskStatus checkWorker(WorkerTask task) {
-        // 👉 нужно реализовать HTTP GET /health/{workerTaskId}
+        // нужно реализовать HTTP GET /health/{workerTaskId}
         try {
             ClusterInfo cluster = task.getClusterInfo();
 
@@ -126,7 +146,12 @@ public class HealthChecker {
     }
 
     private void cleanup(String workerTaskId) {
-        tasks.remove(workerTaskId);
+        WorkerTask task = tasks.remove(workerTaskId);
         sendTimes.remove(workerTaskId);
+
+        // Also cleanup from pipeline tracker if pipeline task
+        if (task != null && task.isPipelineOp()) {
+            pipelineTracker.cleanup(workerTaskId);
+        }
     }
 }

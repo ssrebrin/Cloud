@@ -1,4 +1,4 @@
-package cloud.CloudManager;
+package cloud.domain;
 
 public class ClusterInfo {
     private final String id;

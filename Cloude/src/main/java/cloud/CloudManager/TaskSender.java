@@ -1,5 +1,7 @@
 package cloud.CloudManager;
 
+import cloud.domain.WorkerTask;
+import cloud.domain.WorkerTaskStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.InputStream;

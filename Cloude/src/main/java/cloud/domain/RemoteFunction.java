@@ -1,4 +1,4 @@
-package cloud.cloud;
+package cloud.domain;
 
 import java.io.Serializable;
 
@@ -7,4 +7,3 @@ import java.io.Serializable;
 public interface RemoteFunction<T extends Serializable,R> extends Serializable {
     R apply(T t);
 }
-

@@ -1,5 +1,9 @@
 package cloud.CloudManager;
 
+import cloud.domain.ClusterInfo;
+import cloud.domain.Operation;
+import cloud.domain.Task;
+import cloud.domain.TaskResult;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
@@ -18,24 +22,28 @@ public class Network implements Runnable {
 
     private final BlockingQueue<Task> outgoingTasks;
     private final ConcurrentHashMap<String, ClusterInfo> clusters;
-    private final ConcurrentHashMap<String, TaskResult<List<Integer>>> completedResults;
+    private final ConcurrentHashMap<String, TaskResult<?>> completedResults;
     private final int port;
     private final ObjectMapper mapper = new ObjectMapper();
     private final ConcurrentHashMap<String, TaskAggregator> aggregators;
     private HttpServer server;
 
+    private final TaskScheduler scheduler;
+
     public Network(
             BlockingQueue<Task> outgoingTasks,
             ConcurrentHashMap<String, ClusterInfo> clusters,
-            ConcurrentHashMap<String, TaskResult<List<Integer>>> completedResults,
+            ConcurrentHashMap<String, TaskResult<?>> completedResults,
             ConcurrentHashMap<String, TaskAggregator> aggregators,
-            int port
+            int port,
+            TaskScheduler scheduler
     ) {
         this.outgoingTasks = outgoingTasks;
         this.clusters = clusters;
         this.completedResults = completedResults;
         this.aggregators = aggregators;
         this.port = port;
+        this.scheduler = scheduler;
     }
 
     @Override
@@ -89,16 +97,37 @@ public class Network implements Runnable {
 
             try {
                 Map<String, Object> request = mapper.readValue(exchange.getRequestBody().readAllBytes(), Map.class);
-                String functionStub = String.valueOf(request.get("functionStub"));
-                String serializedFunction = String.valueOf(request.get("serializedFunction"));
-                String jarBytes = String.valueOf(request.get("jarBytes"));
-                List<Integer> values = parseIntegerList(request.get("values"));
-                String callback = String.valueOf(request.get("callback"));
+                
+                // Check if this is a pipeline request (has ops)
+                if (request.containsKey("ops")) {
+                    // Pipeline task
+                    List<Operation> ops = mapper.convertValue(request.get("ops"), 
+                            new TypeReference<List<Operation>>() {});
+                    Object data = request.get("data");
+                    String jarBytes = request.containsKey("jarBytes") ? String.valueOf(request.get("jarBytes")) : null;
+                    String callback = request.containsKey("callback") ? String.valueOf(request.get("callback")) : null;
 
-                Task task = new Task(functionStub, serializedFunction, jarBytes, values, callback);
-                outgoingTasks.put(task);
 
-                writeJson(exchange, 200, Map.of("status", "accepted", "taskId", task.getId()));
+                    System.out.println(">>" + data);
+                    Task task = new Task(ops, data, jarBytes, callback);
+                    outgoingTasks.put(task);
+                    
+                    writeJson(exchange, 200, Map.of("status", "accepted", "taskId", task.getId()));
+                    System.out.println("Pipeline task accepted: " + task.getId() + " with " + ops.size() + " operations");
+                } else {
+                    // Legacy single function task
+                    String functionStub = String.valueOf(request.get("functionStub"));
+                    String serializedFunction = String.valueOf(request.get("serializedFunction"));
+                    String jarBytes = String.valueOf(request.get("jarBytes"));
+                    List<Integer> values = parseIntegerList(request.get("values"));
+                    String callback = String.valueOf(request.get("callback"));
+
+                    Task task = new Task(functionStub, serializedFunction, jarBytes, values, callback);
+                    outgoingTasks.put(task);
+
+                    writeJson(exchange, 200, Map.of("status", "accepted", "taskId", task.getId()));
+                    System.out.println("Legacy task accepted: " + task.getId());
+                }
             } catch (Exception e) {
                 e.printStackTrace();
                 writeJson(exchange, 500, Map.of("status", "error", "error", e.getMessage()));
@@ -119,7 +148,7 @@ public class Network implements Runnable {
                     }
 
                     String taskId = path.substring(prefix.length());
-                    TaskResult<List<Integer>> result = completedResults.get(taskId);
+                    TaskResult<?> result = completedResults.get(taskId);
                     if (result == null) {
                         writeJson(exchange, 202, Map.of("status", "pending"));
                         return;
@@ -135,14 +164,24 @@ public class Network implements Runnable {
                     break;
                 case "POST":
                     try {
-                        TaskResult<List<Integer>> workerResult =
+                        // Use wildcard type to handle any result type (Integer, Boolean, etc.)
+                        TaskResult<?> workerResult =
                                 mapper.readValue(exchange.getRequestBody().readAllBytes(),
-                                        new TypeReference<TaskResult<List<Integer>>>() {});
+                                        new TypeReference<TaskResult<?>>() {});
 
                         String taskIdd = workerResult.getTaskId();
+                        // Check if this is a pipeline task result
+                        Task task = scheduler.getTask(taskIdd);
+                        if (task != null && task.isPipeline()) {
+                            System.out.println("Pipeline result received for task: " + taskIdd + ", opIndex: " + (task.getCurrentOpIndex()));
+                            scheduler.onPipelineResult(task, (TaskResult<Object>) workerResult);
+                            writeJson(exchange, 200, Map.of("status", "ok"));
+                            return;
+                        }
 
+                        // Legacy task handling - cast to List<Integer>
                         TaskAggregator aggregator = aggregators.get(taskIdd);
-                        System.out.println(">" + aggregators);
+                        System.out.println(">" + aggregator);
                         System.out.println("Worker task sent " + taskIdd);
 
                         if (aggregator == null) {
@@ -156,7 +195,9 @@ public class Network implements Runnable {
                         String workerTaskId = workerResult.getWorkerTaskId();
 
                         if (workerResult.isSuccess()) {
-                            aggregator.complete(workerTaskId, workerResult.getResult());
+                            @SuppressWarnings("unchecked")
+                            List<Integer> resultList = (List<Integer>) workerResult.getResult();
+                            aggregator.complete(workerTaskId, resultList);
                         } else {
                             aggregator.fail(workerTaskId, workerResult.getError());
                         }

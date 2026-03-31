@@ -1,5 +1,10 @@
 package cloud.CloudManager;
 
+import cloud.domain.TaskResult;
+import cloud.domain.WorkerTask;
+import cloud.domain.WorkerTaskState;
+import cloud.domain.WorkerTaskStatus;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;

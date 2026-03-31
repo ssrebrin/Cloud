@@ -3,7 +3,7 @@ package cloud.demo;
 import cloud.CloudManager.TaskScheduler;
 import cloud.Cluster.Worker;
 import cloud.cloud.Cloud;
-import cloud.cloud.RemoteFunction;
+import cloud.domain.RemoteFunction;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
