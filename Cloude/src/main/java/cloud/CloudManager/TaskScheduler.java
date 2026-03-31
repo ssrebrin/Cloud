@@ -72,6 +72,7 @@ public class TaskScheduler {
             );
             wt.setSerializedFunction(task.getSerializedFunction());
             wt.setJarBytes(task.getJarBytes());
+            wt.setLanguage(task.getLanguage());
             result.add(wt);
         }
 
@@ -156,6 +157,7 @@ public class TaskScheduler {
                 task.getOps().size()
         );
         workerTask.setJarBytes(task.getJarBytes());
+        workerTask.setLanguage(currentOp.getLanguage());
         
         sendWorkerTask(workerTask, task);
     }

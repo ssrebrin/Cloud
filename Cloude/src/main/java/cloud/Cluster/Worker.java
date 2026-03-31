@@ -1,10 +1,11 @@
 package cloud.Cluster;
 
-import cloud.domain.Task;
+import clojure.java.api.Clojure;
+import clojure.lang.IFn;
+import cloud.domain.Operation;
 import cloud.domain.TaskResult;
 import cloud.domain.WorkerTask;
 import cloud.domain.WorkerTaskStatus;
-import cloud.domain.Operation;
 import cloud.serialization.CloudClassLoader;
 import cloud.serialization.KryoSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -12,7 +13,6 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
-import javax.xml.transform.Result;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.Serializable;
@@ -24,9 +24,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.*;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 
 public class Worker {
+
+    private static final IFn CLOJURE_READ_STRING = Clojure.var("clojure.core", "read-string");
+    private static final IFn CLOJURE_EVAL = Clojure.var("clojure.core", "eval");
+    private static final long COMPLETED_TTL_MS = 60_000;
 
     private final String managerHost;
     private final int managerPort;
@@ -46,33 +54,34 @@ public class Worker {
     private final Map<String, WorkerTaskStatus> activeTasks = new ConcurrentHashMap<>();
     private final Map<String, Long> completedTasks = new ConcurrentHashMap<>();
 
-    private static final long COMPLETED_TTL_MS = 60_000;
-
     public TaskResult process(WorkerTask task) {
         try {
             CloudClassLoader classLoader = new CloudClassLoader(this.getClass().getClassLoader());
-            
-            // Загрузка JAR с кодом (если есть)
+
             if (task.getJarBytes() != null) {
                 byte[] jarBytes = java.util.Base64.getDecoder().decode(task.getJarBytes());
                 classLoader.addJar(jarBytes);
             }
 
-            // Check if this is a pipeline operation
             if (task.isPipelineOp() && task.getOperation() != null) {
                 return processPipelineOperation(task, classLoader);
             }
 
-            // Legacy batch task processing
-            // Десериализация функции
-            byte[] fnBytes = java.util.Base64.getDecoder().decode(task.getSerializedFunction());
-            cloud.domain.RemoteFunction<Integer, Integer> fn = 
-                (cloud.domain.RemoteFunction<Integer, Integer>) serializer.deserialize(fnBytes, classLoader);
+            if (isClojure(task.getLanguage())) {
+                IFn fn = compileClojureFunction(task.getSerializedFunction());
+                List<Integer> results = new ArrayList<>();
+                for (Integer val : task.getValues()) {
+                    results.add(asInt(fn.invoke(val)));
+                }
+                return new TaskResult<>(task.getTaskId(), results, null, task.getWorkerTaskId());
+            }
 
-            // Выполнение
+            byte[] fnBytes = java.util.Base64.getDecoder().decode(task.getSerializedFunction());
+            cloud.domain.RemoteFunction<Integer, Integer> fn =
+                    (cloud.domain.RemoteFunction<Integer, Integer>) serializer.deserialize(fnBytes, classLoader);
+
             List<Integer> results = new ArrayList<>();
             for (Integer val : task.getValues()) {
-
                 results.add(fn.apply(val));
             }
 
@@ -80,18 +89,17 @@ public class Worker {
 
         } catch (Exception e) {
             e.printStackTrace();
-            System.out.println(e.getMessage());
             return new TaskResult<>(task.getTaskId(), null, e.getMessage(), task.getWorkerTaskId());
         }
     }
-    
-    private TaskResult processPipelineOperation(WorkerTask task, CloudClassLoader classLoader) throws Exception {
+
+    private TaskResult processPipelineOperation(WorkerTask task, CloudClassLoader classLoader) {
         Operation op = task.getOperation();
         Object currentData = task.getCurrentData();
-        
-        System.out.println("Processing pipeline operation " + task.getOperationIndex() + "/" + task.getTotalOperations() + 
-                " of type: " + op.type);
-        
+
+        System.out.println("Processing pipeline operation " + task.getOperationIndex() + "/" + task.getTotalOperations() +
+                " of type: " + op.type + " [" + op.getLanguage() + "]");
+
         try {
             return switch (op.type.toLowerCase()) {
                 case "map" -> handleMap(task, op, currentData, classLoader);
@@ -103,11 +111,25 @@ public class Worker {
             return new TaskResult<>(task.getTaskId(), null, e.getMessage(), task.getWorkerTaskId());
         }
     }
-    
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     private TaskResult handleMap(WorkerTask task, Operation op, Object currentData, CloudClassLoader classLoader) throws Exception {
+        if (isClojure(op.getLanguage())) {
+            IFn fn = compileClojureOperation(op);
+            if (currentData instanceof List<?> dataList) {
+                List<Object> results = new ArrayList<>();
+                for (Object item : dataList) {
+                    results.add(fn.invoke(item));
+                }
+                System.out.println("Map operation completed, processed " + results.size() + " items");
+                return new TaskResult<>(task.getTaskId(), results, null, task.getWorkerTaskId());
+            }
+            Object result = fn.invoke(currentData);
+            return new TaskResult<>(task.getTaskId(), List.of(result), null, task.getWorkerTaskId());
+        }
+
         cloud.domain.RemoteFunction fn = (cloud.domain.RemoteFunction) serializer.deserialize(op.function, classLoader);
-        
+
         if (currentData instanceof List<?> dataList) {
             List<Object> results = new ArrayList<>();
             for (Object item : dataList) {
@@ -115,16 +137,32 @@ public class Worker {
             }
             System.out.println("Map operation completed, processed " + results.size() + " items");
             return new TaskResult<>(task.getTaskId(), results, null, task.getWorkerTaskId());
-        } else {
-            Object result = fn.apply((Serializable) currentData);
-            return new TaskResult<>(task.getTaskId(), List.of(result), null, task.getWorkerTaskId());
         }
+
+        Object result = fn.apply((Serializable) currentData);
+        return new TaskResult<>(task.getTaskId(), List.of(result), null, task.getWorkerTaskId());
     }
-    
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     private TaskResult handleFilter(WorkerTask task, Operation op, Object currentData, CloudClassLoader classLoader) throws Exception {
+        if (isClojure(op.getLanguage())) {
+            IFn predicate = compileClojureOperation(op);
+            if (currentData instanceof List<?> dataList) {
+                List<Object> filtered = new ArrayList<>();
+                for (Object item : dataList) {
+                    if (isTruthy(predicate.invoke(item))) {
+                        filtered.add(item);
+                    }
+                }
+                System.out.println("Filter operation completed, kept " + filtered.size() + " of " + dataList.size() + " items");
+                return new TaskResult<>(task.getTaskId(), filtered, null, task.getWorkerTaskId());
+            }
+            Object result = isTruthy(predicate.invoke(currentData)) ? currentData : null;
+            return new TaskResult<>(task.getTaskId(), result, null, task.getWorkerTaskId());
+        }
+
         cloud.domain.RemoteFunction predicate = (cloud.domain.RemoteFunction) serializer.deserialize(op.function, classLoader);
-        
+
         if (currentData instanceof List<?> dataList) {
             List<Object> filtered = new ArrayList<>();
             for (Object item : dataList) {
@@ -135,33 +173,76 @@ public class Worker {
             }
             System.out.println("Filter operation completed, kept " + filtered.size() + " of " + dataList.size() + " items");
             return new TaskResult<>(task.getTaskId(), filtered, null, task.getWorkerTaskId());
-        } else {
-            Boolean shouldInclude = (Boolean) predicate.apply((Serializable) currentData);
-            Object result = shouldInclude ? currentData : null;
-            return new TaskResult<>(task.getTaskId(), result, null, task.getWorkerTaskId());
         }
+
+        Boolean shouldInclude = (Boolean) predicate.apply((Serializable) currentData);
+        Object result = shouldInclude ? currentData : null;
+        return new TaskResult<>(task.getTaskId(), result, null, task.getWorkerTaskId());
     }
-    
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     private TaskResult handleReduce(WorkerTask task, Operation op, Object currentData, CloudClassLoader classLoader) throws Exception {
+        if (isClojure(op.getLanguage())) {
+            IFn reducer = compileClojureOperation(op);
+            if (currentData instanceof List<?> dataList) {
+                if (dataList.isEmpty()) {
+                    return new TaskResult<>(task.getTaskId(), null, null, task.getWorkerTaskId());
+                }
+                Object result = dataList.get(0);
+                for (int i = 1; i < dataList.size(); i++) {
+                    result = reducer.invoke(result, dataList.get(i));
+                }
+                System.out.println("Reduce operation completed");
+                return new TaskResult<>(task.getTaskId(), result, null, task.getWorkerTaskId());
+            }
+            return new TaskResult<>(task.getTaskId(), currentData, null, task.getWorkerTaskId());
+        }
+
         cloud.domain.RemoteReducer reducer = (cloud.domain.RemoteReducer) serializer.deserialize(op.function, classLoader);
-        
+
         if (currentData instanceof List<?> dataList) {
             if (dataList.isEmpty()) {
                 return new TaskResult<>(task.getTaskId(), null, null, task.getWorkerTaskId());
             }
-            
-            // For reduce, we expect a binary function that combines two elements
-            // Apply reduction: result = fn(acc, element)
+
             Object result = dataList.get(0);
             for (int i = 1; i < dataList.size(); i++) {
                 result = reducer.apply((Serializable) result, (Serializable) dataList.get(i));
             }
             System.out.println("Reduce operation completed");
             return new TaskResult<>(task.getTaskId(), result, null, task.getWorkerTaskId());
-        } else {
-            return new TaskResult<>(task.getTaskId(), currentData, null, task.getWorkerTaskId());
         }
+
+        return new TaskResult<>(task.getTaskId(), currentData, null, task.getWorkerTaskId());
+    }
+
+    private IFn compileClojureOperation(Operation op) {
+        String source = new String(op.function, StandardCharsets.UTF_8);
+        return compileClojureFunction(source);
+    }
+
+    private IFn compileClojureFunction(String source) {
+        Object form = CLOJURE_READ_STRING.invoke(source);
+        Object value = CLOJURE_EVAL.invoke(form);
+        if (!(value instanceof IFn fn)) {
+            throw new IllegalArgumentException("Clojure form must evaluate to a function");
+        }
+        return fn;
+    }
+
+    private boolean isClojure(String language) {
+        return language != null && language.equalsIgnoreCase("clojure");
+    }
+
+    private boolean isTruthy(Object value) {
+        return value != null && !Boolean.FALSE.equals(value);
+    }
+
+    private int asInt(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        throw new IllegalArgumentException("Clojure function must return Number, got: " + value);
     }
 
     public void startWorkers(int threads) {
@@ -369,7 +450,6 @@ public class Worker {
 
         } catch (Exception e) {
             e.printStackTrace();
-            // 👉 можно добавить retry позже
         }
     }
 

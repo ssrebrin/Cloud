@@ -98,19 +98,27 @@ public class Network implements Runnable {
 
             try {
                 Map<String, Object> request = mapper.readValue(exchange.getRequestBody().readAllBytes(), Map.class);
+                String language = request.containsKey("language")
+                        ? String.valueOf(request.get("language"))
+                        : Task.LANGUAGE_JAVA;
                 
                 // Check if this is a pipeline request (has ops)
                 if (request.containsKey("ops")) {
                     // Pipeline task
                     List<Operation> ops = mapper.convertValue(request.get("ops"), 
                             new TypeReference<List<Operation>>() {});
+                    for (Operation op : ops) {
+                        if (op.language == null || op.language.isBlank()) {
+                            op.setLanguage(language);
+                        }
+                    }
                     Object data = request.get("data");
                     String jarBytes = request.containsKey("jarBytes") ? String.valueOf(request.get("jarBytes")) : null;
                     String callback = request.containsKey("callback") ? String.valueOf(request.get("callback")) : null;
 
 
                     System.out.println(">>" + data);
-                    Task task = new Task(ops, data, jarBytes, callback);
+                    Task task = new Task(ops, data, jarBytes, callback, language);
                     outgoingTasks.put(task);
                     
                     writeJson(exchange, 200, Map.of("status", "accepted", "taskId", task.getId()));
@@ -123,7 +131,7 @@ public class Network implements Runnable {
                     List<Integer> values = parseIntegerList(request.get("values"));
                     String callback = String.valueOf(request.get("callback"));
 
-                    Task task = new Task(functionStub, serializedFunction, jarBytes, values, callback);
+                    Task task = new Task(functionStub, serializedFunction, jarBytes, values, callback, language);
                     outgoingTasks.put(task);
 
                     writeJson(exchange, 200, Map.of("status", "accepted", "taskId", task.getId()));

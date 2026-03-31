@@ -17,6 +17,7 @@ public class WorkerTask implements Serializable {
     private String jarBytes;
     private List<Integer> values;
     private ClusterInfo clusterInfo;
+    private String language;
     
     // Pipeline fields - single operation execution
     private Operation operation;
@@ -25,7 +26,9 @@ public class WorkerTask implements Serializable {
     private int totalOperations;
     private boolean isPipelineOp;
 
-    public WorkerTask() {}
+    public WorkerTask() {
+        this.language = Task.LANGUAGE_JAVA;
+    }
 
     // Legacy constructor
     public WorkerTask(String taskId, String functionStub, List<Integer> values) {
@@ -34,6 +37,7 @@ public class WorkerTask implements Serializable {
         this.functionStub = functionStub;
         this.values = new ArrayList<>(values);
         this.isPipelineOp = false;
+        this.language = Task.LANGUAGE_JAVA;
     }
     
     // Constructor for pipeline operation
@@ -46,6 +50,7 @@ public class WorkerTask implements Serializable {
         this.totalOperations = totalOperations;
         this.isPipelineOp = true;
         this.values = new ArrayList<>();
+        this.language = operation == null ? Task.LANGUAGE_JAVA : operation.getLanguage();
     }
 
     public String getTaskId() {
@@ -102,6 +107,21 @@ public class WorkerTask implements Serializable {
 
     public void setClusterInfo(ClusterInfo clusterInfo) {
         this.clusterInfo = clusterInfo;
+    }
+
+    public String getLanguage() {
+        if (language == null || language.isBlank()) {
+            return Task.LANGUAGE_JAVA;
+        }
+        return language;
+    }
+
+    public void setLanguage(String language) {
+        if (language == null || language.isBlank()) {
+            this.language = Task.LANGUAGE_JAVA;
+            return;
+        }
+        this.language = language;
     }
     
     // Pipeline getters/setters

@@ -11,12 +11,16 @@ import java.util.UUID;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class Task implements Serializable {
 
+    public static final String LANGUAGE_JAVA = "java";
+    public static final String LANGUAGE_CLOJURE = "clojure";
+
     private String id;
     private String functionStub;
     private String serializedFunction;
     private String jarBytes;
     private List<Integer> values;
     private String callback;
+    private String language;
     
     // Pipeline fields
     private List<Operation> ops;
@@ -29,16 +33,22 @@ public class Task implements Serializable {
         this.ops = new ArrayList<>();
         this.currentOpIndex = 0;
         this.isPipeline = false;
+        this.language = LANGUAGE_JAVA;
     }
 
     // Legacy constructor for single function task
     public Task(String functionStub, String serializedFunction, String jarBytes, List<Integer> values, String callback) {
+        this(functionStub, serializedFunction, jarBytes, values, callback, LANGUAGE_JAVA);
+    }
+
+    public Task(String functionStub, String serializedFunction, String jarBytes, List<Integer> values, String callback, String language) {
         this.id = UUID.randomUUID().toString();
         this.functionStub = functionStub;
         this.serializedFunction = serializedFunction;
         this.jarBytes = jarBytes;
         this.values = new ArrayList<>(values);
         this.callback = callback;
+        this.language = normalizeLanguage(language);
         this.ops = new ArrayList<>();
         this.currentOpIndex = 0;
         this.isPipeline = false;
@@ -46,11 +56,16 @@ public class Task implements Serializable {
     
     // Constructor for pipeline task
     public Task(List<Operation> ops, Object initialData, String jarBytes, String callback) {
+        this(ops, initialData, jarBytes, callback, LANGUAGE_JAVA);
+    }
+
+    public Task(List<Operation> ops, Object initialData, String jarBytes, String callback, String language) {
         this.id = UUID.randomUUID().toString();
         this.ops = new ArrayList<>(ops);
         this.initialData = initialData;
         this.jarBytes = jarBytes;
         this.callback = callback;
+        this.language = normalizeLanguage(language);
         this.currentOpIndex = 0;
         this.isPipeline = true;
         this.values = new ArrayList<>();
@@ -102,6 +117,14 @@ public class Task implements Serializable {
 
     public void setCallback(String callback) {
         this.callback = callback;
+    }
+
+    public String getLanguage() {
+        return normalizeLanguage(language);
+    }
+
+    public void setLanguage(String language) {
+        this.language = normalizeLanguage(language);
     }
     
     // Pipeline getters/setters
@@ -155,5 +178,12 @@ public class Task implements Serializable {
     
     public boolean isLastOp() {
         return isPipeline && currentOpIndex == ops.size() - 1;
+    }
+
+    private String normalizeLanguage(String language) {
+        if (language == null || language.isBlank()) {
+            return LANGUAGE_JAVA;
+        }
+        return language;
     }
 }

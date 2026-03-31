@@ -3,6 +3,7 @@ package cloud.cloud;
 import cloud.domain.RemoteFunction;
 import cloud.domain.RemoteReducer;
 import cloud.domain.Operation;
+import cloud.domain.Task;
 import cloud.serialization.AnnotationScanner;
 import cloud.serialization.CodePacker;
 import cloud.serialization.KryoSerializer;
@@ -66,18 +67,18 @@ public class CloudStream<T extends Serializable> {
     }
 
     public <R extends Serializable> CloudStream<R> map(RemoteFunction<T, R> f) {
-        ops.add(new Operation("map", serializer.serialize(f)));
+        ops.add(new Operation("map", serializer.serialize(f), Task.LANGUAGE_JAVA));
         return (CloudStream <R>) this;
     }
 
     public CloudStream<T> filter(RemoteFunction<T, Boolean> f) {
-        ops.add(new Operation("filter", serializer.serialize(f)));
+        ops.add(new Operation("filter", serializer.serialize(f), Task.LANGUAGE_JAVA));
         return this;
     }
 
 
     public CloudStream<T> reduce(RemoteReducer<T> f) {
-        ops.add(new Operation("reduce", serializer.serialize(f)));
+        ops.add(new Operation("reduce", serializer.serialize(f), Task.LANGUAGE_JAVA));
         return this;
     }
 
@@ -108,6 +109,7 @@ public class CloudStream<T extends Serializable> {
         requestBody.put("jarBytes", Base64.getEncoder().encodeToString(jarBytes));
         requestBody.put("values", payloadValues);
         requestBody.put("callback", "http://localhost:8087/callback");
+        requestBody.put("language", Task.LANGUAGE_JAVA);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(managerUrl + "/execute"))
