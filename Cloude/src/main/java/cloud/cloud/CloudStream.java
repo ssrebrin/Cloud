@@ -3,6 +3,7 @@ package cloud.cloud;
 import cloud.domain.RemoteFunction;
 import cloud.domain.RemoteReducer;
 import cloud.domain.Operation;
+import cloud.serialization.AnnotationScanner;
 import cloud.serialization.CodePacker;
 import cloud.serialization.KryoSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -89,13 +90,15 @@ public class CloudStream<T extends Serializable> {
 
         List<Object> payloadValues = new ArrayList<>(values);
 
-        // Объединяем обязательные классы и дополнительные
-        Class<?>[] allForJar = new Class<?>[extraClasses.length + 4];
+        // Объединяем обязательные классы, дополнительные и аннотированные
+        Class<?>[] annotatedClasses = AnnotationScanner.findAnnotatedClasses();
+        Class<?>[] allForJar = new Class<?>[extraClasses.length + annotatedClasses.length + 4];
         allForJar[0] = Main.class;
         allForJar[1] = RemoteFunction.class;
         allForJar[2] = RemoteReducer.class;
         allForJar[3] = Operation.class;
         System.arraycopy(extraClasses, 0, allForJar, 4, extraClasses.length);
+        System.arraycopy(annotatedClasses, 0, allForJar, 4 + extraClasses.length, annotatedClasses.length);
 
         byte[] jarBytes = CodePacker.packClass(allForJar);
 

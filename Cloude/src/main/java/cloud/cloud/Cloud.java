@@ -1,6 +1,7 @@
 package cloud.cloud;
 
 import cloud.domain.RemoteFunction;
+import cloud.serialization.AnnotationScanner;
 import cloud.serialization.CodePacker;
 import cloud.serialization.KryoSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -40,12 +41,14 @@ public class Cloud {
 
         byte[] serializedFn = serializer.serialize(fn);
         
-        // Объединяем обязательные классы и дополнительные
-        Class<?>[] allForJar = new Class<?>[extraClasses.length + 3];
+        // Объединяем обязательные классы, дополнительные и аннотированные
+        Class<?>[] annotatedClasses = AnnotationScanner.findAnnotatedClasses();
+        Class<?>[] allForJar = new Class<?>[extraClasses.length + annotatedClasses.length + 3];
         allForJar[0] = fn.getClass();
         allForJar[1] = Main.class;
         allForJar[2] = RemoteFunction.class;
         System.arraycopy(extraClasses, 0, allForJar, 3, extraClasses.length);
+        System.arraycopy(annotatedClasses, 0, allForJar, 3 + extraClasses.length, annotatedClasses.length);
         
         byte[] jarBytes = CodePacker.packClass(allForJar);
 
