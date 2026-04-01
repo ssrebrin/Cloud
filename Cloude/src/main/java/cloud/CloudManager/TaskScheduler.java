@@ -14,12 +14,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 public class TaskScheduler {
 
-    private static final int BATCH_SIZE = 10;
+    private static final int BATCH_SIZE = 5;
 
     private final BlockingQueue<Task> outgoingTasks;
+    private final BlockingQueue<WorkerTask> resendQueue;
     private final ConcurrentHashMap<String, ClusterInfo> clusters;
     private final ConcurrentHashMap<String, TaskResult<?>> completedResults;
     private final ConcurrentHashMap<String, TaskAggregator> aggregators;
@@ -38,6 +40,7 @@ public class TaskScheduler {
 
     public TaskScheduler(int managerPort) {
         this.outgoingTasks = new LinkedBlockingQueue<>();
+        this.resendQueue = new LinkedBlockingQueue<>();
         this.clusters = new ConcurrentHashMap<>();
         this.completedResults = new ConcurrentHashMap<>();
         this.aggregators = new ConcurrentHashMap<>();
@@ -48,7 +51,7 @@ public class TaskScheduler {
         this.network = new Network(outgoingTasks, clusters, completedResults, aggregators, managerPort, this);
         this.taskSender = new TaskSender();
         this.dispatcher = Executors.newSingleThreadExecutor();
-        this.healthChecker = new HealthChecker(aggregators, pipelineTracker, taskSender);
+        this.healthChecker = new HealthChecker(aggregators, pipelineTracker, taskSender, this::enqueueForResend);
 
         new Thread(network).start();
         dispatcher.submit(this::dispatchLoop);
@@ -99,7 +102,21 @@ public class TaskScheduler {
             Task task = null;
 
             try {
-                task = outgoingTasks.take();
+                WorkerTask workerTaskForResend = resendQueue.poll();
+                if (workerTaskForResend != null) {
+                    Task parentTask = getTask(workerTaskForResend.getTaskId());
+                    if (parentTask != null) {
+                        sendWorkerTask(workerTaskForResend, parentTask);
+                    } else {
+                        System.out.println("Drop resend task because parent not found: " + workerTaskForResend.getWorkerTaskId());
+                    }
+                    continue;
+                }
+
+                task = outgoingTasks.poll(500, TimeUnit.MILLISECONDS);
+                if (task == null) {
+                    continue;
+                }
                 System.out.println("New task received: " + task.getId());
                 
                 if (task.isPipeline()) {
@@ -134,6 +151,13 @@ public class TaskScheduler {
                 }
             }
         }
+    }
+
+    private void enqueueForResend(WorkerTask workerTask) {
+        if (workerTask == null) {
+            return;
+        }
+        resendQueue.offer(workerTask);
     }
     
     // Send a single pipeline operation to a worker
@@ -182,7 +206,13 @@ public class TaskScheduler {
             currentIndex = (currentIndex + 1) % clusterCount;
 
             try {
-                taskSender.sendTask(cluster.getHost(), cluster.getPort(), wt);
+                String error = taskSender.sendTask(cluster.getHost(), cluster.getPort(), wt);
+                if (error != null && !error.isBlank()) {
+                    System.out.println("Failed to send task " + wt.getWorkerTaskId() +
+                            " to cluster " + cluster.getId() + ": " + error);
+                    attempts++;
+                    continue;
+                }
                 sent = true;
                 wt.setClusterInfo(cluster);
                 this.healthChecker.register(wt);

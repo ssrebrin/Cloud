@@ -117,7 +117,7 @@ public class Network implements Runnable {
                     String callback = request.containsKey("callback") ? String.valueOf(request.get("callback")) : null;
 
 
-                    System.out.println(">>" + data);
+                    //System.out.println(">>" + data);
                     Task task = new Task(ops, data, jarBytes, callback, language);
                     outgoingTasks.put(task);
                     

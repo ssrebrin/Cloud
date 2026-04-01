@@ -41,16 +41,15 @@ public class Cloud {
         List<Integer> payloadValues = Arrays.stream(values).boxed().toList();
 
         byte[] serializedFn = serializer.serialize(fn);
-        
-        // Объединяем обязательные классы, дополнительные и аннотированные
+
+        // Pack contract classes + user classes, without hard coupling to app package names.
         Class<?>[] annotatedClasses = AnnotationScanner.findAnnotatedClasses();
-        Class<?>[] allForJar = new Class<?>[extraClasses.length + annotatedClasses.length + 3];
+        Class<?>[] allForJar = new Class<?>[extraClasses.length + annotatedClasses.length + 2];
         allForJar[0] = fn.getClass();
-        allForJar[1] = Main.class;
-        allForJar[2] = RemoteFunction.class;
-        System.arraycopy(extraClasses, 0, allForJar, 3, extraClasses.length);
-        System.arraycopy(annotatedClasses, 0, allForJar, 3 + extraClasses.length, annotatedClasses.length);
-        
+        allForJar[1] = RemoteFunction.class;
+        System.arraycopy(extraClasses, 0, allForJar, 2, extraClasses.length);
+        System.arraycopy(annotatedClasses, 0, allForJar, 2 + extraClasses.length, annotatedClasses.length);
+
         byte[] jarBytes = CodePacker.packClass(allForJar);
 
         Map<String, Object> requestBody = Map.of(

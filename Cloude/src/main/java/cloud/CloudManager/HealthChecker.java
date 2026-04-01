@@ -5,31 +5,37 @@ import cloud.domain.WorkerTask;
 import cloud.domain.WorkerTaskStatus;
 
 import java.util.Map;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 public class HealthChecker {
 
     private final Map<String, TaskAggregator> aggregators;
     private final PipelineTaskTracker pipelineTracker;
 
-    // workerTaskId → время отправки
     private final ConcurrentHashMap<String, Long> sendTimes = new ConcurrentHashMap<>();
-
-    // workerTaskId → WorkerTask
     private final ConcurrentHashMap<String, WorkerTask> tasks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Integer> retryAttempts = new ConcurrentHashMap<>();
 
     private final TaskSender taskSender;
+    private final Consumer<WorkerTask> resendQueueSink;
 
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
     private static final long GRACE_PERIOD_MS = 2000;
+    private static final int MAX_DIRECT_RETRY_ATTEMPTS = 3;
 
     public HealthChecker(Map<String, TaskAggregator> aggregators,
                          PipelineTaskTracker pipelineTracker,
-                         TaskSender taskSender) {
+                         TaskSender taskSender,
+                         Consumer<WorkerTask> resendQueueSink) {
         this.aggregators = aggregators;
         this.pipelineTracker = pipelineTracker;
         this.taskSender = taskSender;
+        this.resendQueueSink = resendQueueSink;
     }
 
     public void start() {
@@ -40,12 +46,12 @@ public class HealthChecker {
         scheduler.shutdownNow();
     }
 
-    // вызывается при отправке задачи (как batch, так и pipeline)
     public void register(WorkerTask task) {
-        tasks.put(task.getWorkerTaskId(), task);
-        sendTimes.put(task.getWorkerTaskId(), System.currentTimeMillis());
+        String workerTaskId = task.getWorkerTaskId();
+        tasks.put(workerTaskId, task);
+        sendTimes.put(workerTaskId, System.currentTimeMillis());
+        retryAttempts.put(workerTaskId, 0);
 
-        // Register with pipeline tracker if it's a pipeline operation
         if (task.isPipelineOp()) {
             pipelineTracker.register(task);
         }
@@ -55,11 +61,8 @@ public class HealthChecker {
         long now = System.currentTimeMillis();
 
         for (WorkerTask task : tasks.values()) {
-
             String workerTaskId = task.getWorkerTaskId();
-            String taskId = task.getTaskId();
 
-            // Check if already finished
             if (isTaskFinished(task, workerTaskId)) {
                 cleanup(workerTaskId);
                 continue;
@@ -69,7 +72,6 @@ public class HealthChecker {
                 WorkerTaskStatus status = checkWorker(task);
 
                 if (status == WorkerTaskStatus.DONE) {
-                    // Mark as complete in appropriate tracker
                     if (task.isPipelineOp()) {
                         pipelineTracker.complete(workerTaskId);
                     }
@@ -82,15 +84,10 @@ public class HealthChecker {
                 }
 
                 if (status == WorkerTaskStatus.NOT_FOUND) {
-
                     long sentAt = sendTimes.getOrDefault(workerTaskId, now);
-
                     if (now - sentAt < GRACE_PERIOD_MS) {
-                        // результат может быть "в пути"
                         continue;
                     }
-
-                    // считаем потерянной → retry
                     retry(task);
                 }
 
@@ -101,55 +98,69 @@ public class HealthChecker {
     }
 
     private boolean isTaskFinished(WorkerTask task, String workerTaskId) {
-        // For pipeline tasks, check pipeline tracker
         if (task.isPipelineOp()) {
             return pipelineTracker.isFinished(workerTaskId);
         }
-        // For batch tasks, check aggregator
         TaskAggregator aggregator = aggregators.get(task.getTaskId());
         return aggregator != null && aggregator.isFinished();
     }
 
     private WorkerTaskStatus checkWorker(WorkerTask task) {
-        // нужно реализовать HTTP GET /health/{workerTaskId}
         try {
             ClusterInfo cluster = task.getClusterInfo();
-
-            return taskSender.checkStatus(
-                    cluster.getHost(),
-                    cluster.getPort(),
-                    task.getWorkerTaskId()
-            );
-
+            return taskSender.checkStatus(cluster.getHost(), cluster.getPort(), task.getWorkerTaskId());
         } catch (Exception e) {
             return WorkerTaskStatus.NOT_FOUND;
         }
     }
 
     private void retry(WorkerTask task) {
-        System.out.println("Retrying task: " + task.getWorkerTaskId());
+        String workerTaskId = task.getWorkerTaskId();
+        int attempt = retryAttempts.merge(workerTaskId, 1, Integer::sum);
+        System.out.println("Retrying task: " + workerTaskId + ", attempt: " + attempt);
+
+        if (attempt > MAX_DIRECT_RETRY_ATTEMPTS) {
+            enqueueForResend(task, "Retry limit exceeded");
+            return;
+        }
 
         try {
             ClusterInfo cluster = task.getClusterInfo();
+            if (cluster == null) {
+                enqueueForResend(task, "No assigned cluster");
+                return;
+            }
 
-            taskSender.sendTask(
-                    cluster.getHost(),
-                    cluster.getPort(),
-                    task
-            );
+            String error = taskSender.sendTask(cluster.getHost(), cluster.getPort(), task);
+            if (error != null && !error.isBlank()) {
+                if (attempt >= MAX_DIRECT_RETRY_ATTEMPTS) {
+                    enqueueForResend(task, "Retry failed: " + error);
+                }
+                return;
+            }
 
-            sendTimes.put(task.getWorkerTaskId(), System.currentTimeMillis());
+            sendTimes.put(workerTaskId, System.currentTimeMillis());
 
         } catch (Exception e) {
-            e.printStackTrace();
+            if (attempt >= MAX_DIRECT_RETRY_ATTEMPTS) {
+                enqueueForResend(task, "Retry exception: " + e.getMessage());
+            } else {
+                System.out.println("Retry failed for task " + workerTaskId + ": " + e.getMessage());
+            }
         }
+    }
+
+    private void enqueueForResend(WorkerTask task, String reason) {
+        System.out.println("Enqueue for resend: " + task.getWorkerTaskId() + ", reason: " + reason);
+        resendQueueSink.accept(task);
+        cleanup(task.getWorkerTaskId());
     }
 
     private void cleanup(String workerTaskId) {
         WorkerTask task = tasks.remove(workerTaskId);
         sendTimes.remove(workerTaskId);
+        retryAttempts.remove(workerTaskId);
 
-        // Also cleanup from pipeline tracker if pipeline task
         if (task != null && task.isPipelineOp()) {
             pipelineTracker.cleanup(workerTaskId);
         }

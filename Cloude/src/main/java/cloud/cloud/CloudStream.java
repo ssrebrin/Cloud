@@ -1,8 +1,8 @@
 package cloud.cloud;
 
+import cloud.domain.Operation;
 import cloud.domain.RemoteFunction;
 import cloud.domain.RemoteReducer;
-import cloud.domain.Operation;
 import cloud.domain.Task;
 import cloud.serialization.AnnotationScanner;
 import cloud.serialization.CodePacker;
@@ -15,7 +15,12 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public class CloudStream<T extends Serializable> {
     private final String managerUrl;
@@ -68,7 +73,7 @@ public class CloudStream<T extends Serializable> {
 
     public <R extends Serializable> CloudStream<R> map(RemoteFunction<T, R> f) {
         ops.add(new Operation("map", serializer.serialize(f), Task.LANGUAGE_JAVA));
-        return (CloudStream <R>) this;
+        return (CloudStream<R>) this;
     }
 
     public CloudStream<T> filter(RemoteFunction<T, Boolean> f) {
@@ -91,15 +96,14 @@ public class CloudStream<T extends Serializable> {
 
         List<Object> payloadValues = new ArrayList<>(values);
 
-        // Объединяем обязательные классы, дополнительные и аннотированные
+        // Pack only contract + user classes, independent from app package names.
         Class<?>[] annotatedClasses = AnnotationScanner.findAnnotatedClasses();
-        Class<?>[] allForJar = new Class<?>[extraClasses.length + annotatedClasses.length + 4];
-        allForJar[0] = Main.class;
-        allForJar[1] = RemoteFunction.class;
-        allForJar[2] = RemoteReducer.class;
-        allForJar[3] = Operation.class;
-        System.arraycopy(extraClasses, 0, allForJar, 4, extraClasses.length);
-        System.arraycopy(annotatedClasses, 0, allForJar, 4 + extraClasses.length, annotatedClasses.length);
+        Class<?>[] allForJar = new Class<?>[extraClasses.length + annotatedClasses.length + 3];
+        allForJar[0] = RemoteFunction.class;
+        allForJar[1] = RemoteReducer.class;
+        allForJar[2] = Operation.class;
+        System.arraycopy(extraClasses, 0, allForJar, 3, extraClasses.length);
+        System.arraycopy(annotatedClasses, 0, allForJar, 3 + extraClasses.length, annotatedClasses.length);
 
         byte[] jarBytes = CodePacker.packClass(allForJar);
 
@@ -125,10 +129,8 @@ public class CloudStream<T extends Serializable> {
         }
 
         String taskId = String.valueOf(responseMap.get("taskId"));
-        
-        // Очищаем ops после отправки для возможности переиспользования
         ops.clear();
-        
+
         return waitForResult(taskId);
     }
 

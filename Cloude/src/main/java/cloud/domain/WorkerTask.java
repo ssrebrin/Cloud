@@ -1,6 +1,7 @@
 package cloud.domain;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import java.io.Serializable;
 import java.util.ArrayList;
@@ -16,6 +17,7 @@ public class WorkerTask implements Serializable {
     private String serializedFunction;
     private String jarBytes;
     private List<Integer> values;
+    @JsonIgnore
     private ClusterInfo clusterInfo;
     private String language;
     
@@ -101,10 +103,12 @@ public class WorkerTask implements Serializable {
         this.values = values;
     }
 
+    @JsonIgnore
     public ClusterInfo getClusterInfo() {
         return clusterInfo;
     }
 
+    @JsonIgnore
     public void setClusterInfo(ClusterInfo clusterInfo) {
         this.clusterInfo = clusterInfo;
     }

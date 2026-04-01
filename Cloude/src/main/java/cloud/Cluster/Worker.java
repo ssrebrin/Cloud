@@ -16,6 +16,8 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.Serializable;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URL;
@@ -77,18 +79,16 @@ public class Worker {
             }
 
             byte[] fnBytes = java.util.Base64.getDecoder().decode(task.getSerializedFunction());
-            cloud.domain.RemoteFunction<Integer, Integer> fn =
-                    (cloud.domain.RemoteFunction<Integer, Integer>) serializer.deserialize(fnBytes, classLoader);
+            Object fn = serializer.deserialize(fnBytes, classLoader);
 
             List<Integer> results = new ArrayList<>();
             for (Integer val : task.getValues()) {
-                results.add(fn.apply(val));
+                results.add(asInt(invokeUnaryFunction(fn, val)));
             }
 
             return new TaskResult<>(task.getTaskId(), results, null, task.getWorkerTaskId());
 
         } catch (Exception e) {
-            e.printStackTrace();
             return new TaskResult<>(task.getTaskId(), null, e.getMessage(), task.getWorkerTaskId());
         }
     }
@@ -108,6 +108,8 @@ public class Worker {
                 default -> throw new IllegalArgumentException("Unknown operation type: " + op.type);
             };
         } catch (Exception e) {
+            System.out.println(e.getMessage());
+            e.printStackTrace();
             return new TaskResult<>(task.getTaskId(), null, e.getMessage(), task.getWorkerTaskId());
         }
     }
@@ -128,18 +130,18 @@ public class Worker {
             return new TaskResult<>(task.getTaskId(), List.of(result), null, task.getWorkerTaskId());
         }
 
-        cloud.domain.RemoteFunction fn = (cloud.domain.RemoteFunction) serializer.deserialize(op.function, classLoader);
+        Object fn = serializer.deserialize(op.function, classLoader);
 
         if (currentData instanceof List<?> dataList) {
             List<Object> results = new ArrayList<>();
             for (Object item : dataList) {
-                results.add(fn.apply((Serializable) item));
+                results.add(invokeUnaryFunction(fn, item));
             }
             System.out.println("Map operation completed, processed " + results.size() + " items");
             return new TaskResult<>(task.getTaskId(), results, null, task.getWorkerTaskId());
         }
 
-        Object result = fn.apply((Serializable) currentData);
+        Object result = invokeUnaryFunction(fn, currentData);
         return new TaskResult<>(task.getTaskId(), List.of(result), null, task.getWorkerTaskId());
     }
 
@@ -161,12 +163,12 @@ public class Worker {
             return new TaskResult<>(task.getTaskId(), result, null, task.getWorkerTaskId());
         }
 
-        cloud.domain.RemoteFunction predicate = (cloud.domain.RemoteFunction) serializer.deserialize(op.function, classLoader);
+        Object predicate = serializer.deserialize(op.function, classLoader);
 
         if (currentData instanceof List<?> dataList) {
             List<Object> filtered = new ArrayList<>();
             for (Object item : dataList) {
-                Boolean shouldInclude = (Boolean) predicate.apply((Serializable) item);
+                Boolean shouldInclude = asBoolean(invokeUnaryFunction(predicate, item));
                 if (shouldInclude) {
                     filtered.add(item);
                 }
@@ -175,7 +177,7 @@ public class Worker {
             return new TaskResult<>(task.getTaskId(), filtered, null, task.getWorkerTaskId());
         }
 
-        Boolean shouldInclude = (Boolean) predicate.apply((Serializable) currentData);
+        Boolean shouldInclude = asBoolean(invokeUnaryFunction(predicate, currentData));
         Object result = shouldInclude ? currentData : null;
         return new TaskResult<>(task.getTaskId(), result, null, task.getWorkerTaskId());
     }
@@ -198,7 +200,7 @@ public class Worker {
             return new TaskResult<>(task.getTaskId(), currentData, null, task.getWorkerTaskId());
         }
 
-        cloud.domain.RemoteReducer reducer = (cloud.domain.RemoteReducer) serializer.deserialize(op.function, classLoader);
+        Object reducer = serializer.deserialize(op.function, classLoader);
 
         if (currentData instanceof List<?> dataList) {
             if (dataList.isEmpty()) {
@@ -207,7 +209,7 @@ public class Worker {
 
             Object result = dataList.get(0);
             for (int i = 1; i < dataList.size(); i++) {
-                result = reducer.apply((Serializable) result, (Serializable) dataList.get(i));
+                result = invokeBinaryFunction(reducer, result, dataList.get(i));
             }
             System.out.println("Reduce operation completed");
             return new TaskResult<>(task.getTaskId(), result, null, task.getWorkerTaskId());
@@ -243,6 +245,54 @@ public class Worker {
             return number.intValue();
         }
         throw new IllegalArgumentException("Clojure function must return Number, got: " + value);
+    }
+
+    private Boolean asBoolean(Object value) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        throw new IllegalArgumentException("Filter function must return Boolean, got: " + value);
+    }
+
+    private Object invokeUnaryFunction(Object fn, Object value) {
+        return invokeApply(fn, value);
+    }
+
+    private Object invokeBinaryFunction(Object fn, Object left, Object right) {
+        return invokeApply(fn, left, right);
+    }
+
+    private Object invokeApply(Object fn, Object... args) {
+        try {
+            Method applyMethod = findApplyMethod(fn.getClass(), args.length);
+            return applyMethod.invoke(fn, args);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause() == null ? e : e.getCause();
+            throw new RuntimeException("Remote function invocation failed: " + cause.getMessage(), cause);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to invoke remote function: " + e.getMessage(), e);
+        }
+    }
+
+    private Method findApplyMethod(Class<?> type, int arity) throws NoSuchMethodException {
+        Method fallback = null;
+        for (Method method : type.getMethods()) {
+            if (!"apply".equals(method.getName())) {
+                continue;
+            }
+            if (method.getParameterCount() == arity) {
+                method.setAccessible(true);
+                return method;
+            }
+            if (fallback == null) {
+                fallback = method;
+            }
+        }
+        if (fallback != null) {
+            fallback.setAccessible(true);
+            return fallback;
+        }
+        throw new NoSuchMethodException("No apply method with arity " + arity + " in " + type.getName());
     }
 
     public void startWorkers(int threads) {

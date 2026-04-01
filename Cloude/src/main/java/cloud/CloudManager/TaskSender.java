@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.List;
@@ -38,9 +39,14 @@ public class TaskSender {
         String error;
         try (InputStream err = conn.getErrorStream()) {
             if (err != null) {
-                System.out.println("Error: " + err);
-                Map<String, Object> response = mapper.readValue(err, Map.class);
-                error = String.valueOf(response.get("error"));
+                byte[] payload = err.readAllBytes();
+                String raw = new String(payload, StandardCharsets.UTF_8);
+                try {
+                    Map<String, Object> response = mapper.readValue(payload, Map.class);
+                    error = String.valueOf(response.get("error"));
+                } catch (Exception parseError) {
+                    error = raw.isBlank() ? ("Unknown error, code=" + code) : raw;
+                }
             } else {
                 error = "Unknown error, code=" + code;
             }

@@ -22,8 +22,41 @@
 (defn stream [ctx values]
   (assoc ctx :values (vec values)))
 
+(defn- resolve-var [v]
+  (cond
+    (var? v) v
+    (symbol? v) (or (resolve v)
+                    (throw (IllegalArgumentException.
+                            (str "Cannot resolve symbol: " v))))
+    :else (throw (IllegalArgumentException.
+                  (str "Expected var or symbol, got: " (type v))))))
+
+(defn- annotated-source [v]
+  (let [target-var (resolve-var v)
+        meta-map (meta target-var)
+        source (:cloud/source meta-map)
+        remote? (:cloud/remote meta-map)]
+    (when-not remote?
+      (throw (IllegalArgumentException.
+              (str "Function is not annotated with defcloudfn: " (:name meta-map)))))
+    (when-not (string? source)
+      (throw (IllegalStateException.
+              (str "Annotated function has no :cloud/source: " (:name meta-map)))))
+    source))
+
+(defmacro defcloudfn [name args & body]
+  (let [source (pr-str `(fn ~args ~@body))
+        m (assoc (or (meta name) {})
+                 :cloud/remote true
+                 :cloud/source source)]
+    `(defn ~(with-meta name m) ~args ~@body)))
+
 (defn- ->source [x]
-  (if (string? x) x (pr-str x)))
+  (cond
+    (string? x) x
+    (var? x) (annotated-source x)
+    (symbol? x) (annotated-source x)
+    :else (pr-str x)))
 
 (defn map-op [ctx clojure-fn]
   (update ctx :ops conj
@@ -102,6 +135,30 @@
 
 (defmacro execute-code [ctx fn-form values]
   `(execute ~ctx ~(pr-str fn-form) ~values))
+
+(defn execute-annotated [ctx fn-var values]
+  (execute ctx (annotated-source fn-var) values))
+
+(defn map-annotated [ctx fn-var]
+  (map-op ctx (annotated-source fn-var)))
+
+(defn filter-annotated [ctx fn-var]
+  (filter-op ctx (annotated-source fn-var)))
+
+(defn reduce-annotated [ctx fn-var]
+  (reduce-op ctx (annotated-source fn-var)))
+
+(defmacro execute-ann [ctx fn-sym values]
+  `(execute-annotated ~ctx (var ~fn-sym) ~values))
+
+(defmacro map-ann [ctx fn-sym]
+  `(map-annotated ~ctx (var ~fn-sym)))
+
+(defmacro filter-ann [ctx fn-sym]
+  `(filter-annotated ~ctx (var ~fn-sym)))
+
+(defmacro reduce-ann [ctx fn-sym]
+  `(reduce-annotated ~ctx (var ~fn-sym)))
 
 (defn execute-stream [ctx]
   (when (nil? (:values ctx))
