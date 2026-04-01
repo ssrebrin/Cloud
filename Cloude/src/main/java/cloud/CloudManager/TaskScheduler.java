@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit;
 
 public class TaskScheduler {
 
-    private static final int BATCH_SIZE = 5;
+    private static final int BATCH_SIZE = 100000;
 
     private final BlockingQueue<Task> outgoingTasks;
     private final BlockingQueue<WorkerTask> resendQueue;

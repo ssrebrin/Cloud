@@ -1,5 +1,4 @@
 plugins {
-
     id 'java'
 
 }
@@ -25,6 +24,7 @@ dependencies {
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.0'
     implementation 'com.esotericsoftware:kryo:5.5.0'
     implementation 'org.objenesis:objenesis:3.3'
+    implementation 'org.clojure:clojure:1.11.1'
 
     testImplementation platform('org.junit:junit-bom:5.10.0')
 
@@ -53,15 +53,18 @@ tasks.withType(JavaExec) {
 
 
 
-task runScheduler(type: JavaExec) {
-
-    mainClass.set("cloud.CloudManager.TaskScheduler")
-
-    classpath = sourceSets.main.runtimeClasspath
-
+sourceSets {
+    main {
+        resources {
+            srcDirs += 'src/main/clojure'
+        }
+    }
 }
 
-
+task runScheduler(type: JavaExec) {
+    mainClass.set("cloud.CloudManager.TaskScheduler")
+    classpath = sourceSets.main.runtimeClasspath
+}
 
 task runCluster(type: JavaExec) {
     mainClass.set("cloud.Cluster.Worker")
@@ -70,9 +73,11 @@ task runCluster(type: JavaExec) {
 
 task runMain(type: JavaExec) {
     mainClass.set("cloud.cloud.Main")
-
-    mainClass.set("cloud.Cluster.Cluster")
-
     classpath = sourceSets.main.runtimeClasspath
+}
 
+task runClojure(type: JavaExec) {
+    mainClass.set("clojure.main")
+    classpath = sourceSets.main.runtimeClasspath
+    args = ["-m", "cloud.cloud.main-clojure"]
 }
